@@ -1,6 +1,7 @@
 """Domain exceptions module."""
 
 from .saga import (
+    ActiveSagaAlreadyExistsError,
     SagaDefinitionError,
     SagaNotFoundError,
     SagaStateError,
@@ -8,6 +9,7 @@ from .saga import (
 )
 
 __all__ = [
+    "ActiveSagaAlreadyExistsError",
     "SagaDefinitionError",
     "TypeValidationError",
     "SagaNotFoundError",

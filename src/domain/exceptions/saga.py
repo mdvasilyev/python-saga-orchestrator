@@ -14,5 +14,9 @@ class SagaNotFoundError(SagaError):
     """Saga instance is not found in persistence."""
 
 
+class ActiveSagaAlreadyExistsError(SagaError):
+    """An active saga already exists for the provided aggregation key."""
+
+
 class SagaStateError(SagaError):
     """Invalid saga state transition or operation."""
