@@ -78,10 +78,38 @@ class SagaRepository(Generic[ModelT]):
         now: datetime,
         limit: int,
     ) -> list[ModelT]:
+        return await self._due_by_status(
+            session=session,
+            status=SagaStatus.SUSPENDED,
+            now=now,
+            limit=limit,
+        )
+
+    async def due_running(
+        self,
+        session: AsyncSession,
+        now: datetime,
+        limit: int,
+    ) -> list[ModelT]:
+        return await self._due_by_status(
+            session=session,
+            status=SagaStatus.RUNNING,
+            now=now,
+            limit=limit,
+        )
+
+    async def _due_by_status(
+        self,
+        *,
+        session: AsyncSession,
+        status: SagaStatus,
+        now: datetime,
+        limit: int,
+    ) -> list[ModelT]:
         stmt = (
             select(self.model_class)
             .where(
-                self.model_class.status == SagaStatus.SUSPENDED,
+                self.model_class.status == status,
                 self.model_class.deadline_at.is_not(None),
                 self.model_class.deadline_at <= now,
             )
