@@ -9,7 +9,7 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.ext.mutable import MutableDict, MutableList
 from sqlalchemy.orm import Mapped, declarative_mixin, mapped_column
 
-from src.domain.models.enums import SagaStatus
+from ..models.enums import SagaStatus
 
 JSON_TYPE = JSON().with_variant(JSONB, "postgresql")
 
