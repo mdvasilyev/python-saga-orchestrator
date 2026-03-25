@@ -98,6 +98,19 @@ class SagaRepository(Generic[ModelT]):
             limit=limit,
         )
 
+    async def due_compensating(
+        self,
+        session: AsyncSession,
+        now: datetime,
+        limit: int,
+    ) -> list[ModelT]:
+        return await self._due_by_status(
+            session=session,
+            status=SagaStatus.COMPENSATING,
+            now=now,
+            limit=limit,
+        )
+
     async def _due_by_status(
         self,
         *,
