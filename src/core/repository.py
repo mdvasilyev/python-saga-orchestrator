@@ -24,6 +24,16 @@ class SagaRepository(Generic[ModelT]):
     def __init__(self, model_class: type[ModelT]) -> None:
         self.model_class = model_class
 
+    async def get(self, session: AsyncSession, saga_id: UUID) -> ModelT:
+        stmt: Select[tuple[ModelT]] = select(self.model_class).where(
+            self.model_class.id == saga_id
+        )
+        result = await session.execute(stmt)
+        saga = result.scalar_one_or_none()
+        if saga is None:
+            raise SagaNotFoundError(f"Saga '{saga_id}' not found")
+        return saga
+
     async def get_for_update(self, session: AsyncSession, saga_id: UUID) -> ModelT:
         stmt: Select[tuple[ModelT]] = (
             select(self.model_class)
