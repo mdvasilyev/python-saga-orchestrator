@@ -11,7 +11,9 @@ from sqlalchemy.orm import Mapped, declarative_mixin, mapped_column
 
 from ..models.enums import SagaStatus
 
-JSON_TYPE = JSON().with_variant(JSONB, "postgresql")
+
+def _json_type() -> JSON:
+    return JSON().with_variant(JSONB, "postgresql")
 
 
 @declarative_mixin
@@ -32,10 +34,10 @@ class SagaStateMixin:
         nullable=True,
     )
     context: Mapped[dict[str, Any]] = mapped_column(
-        MutableDict.as_mutable(JSON_TYPE), default=dict
+        MutableDict.as_mutable(_json_type()), default=dict
     )
     step_history: Mapped[list[dict[str, Any]]] = mapped_column(
-        MutableList.as_mutable(JSON_TYPE), default=list
+        MutableList.as_mutable(_json_type()), default=list
     )
     deadline_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
