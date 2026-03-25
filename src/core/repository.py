@@ -15,6 +15,8 @@ ModelT = TypeVar("ModelT", bound=SagaStateMixin)
 
 
 class SagaRepository(Generic[ModelT]):
+    """Provide persistence operations for saga state rows."""
+
     ACTIVE_STATUSES: tuple[SagaStatus, ...] = (
         SagaStatus.RUNNING,
         SagaStatus.SUSPENDED,
@@ -22,9 +24,11 @@ class SagaRepository(Generic[ModelT]):
     )
 
     def __init__(self, model_class: type[ModelT]) -> None:
+        """Initialize the repository for one saga state model."""
         self.model_class = model_class
 
     async def get(self, session: AsyncSession, saga_id: UUID) -> ModelT:
+        """Return one saga row by id."""
         stmt: Select[tuple[ModelT]] = select(self.model_class).where(
             self.model_class.id == saga_id
         )
@@ -35,6 +39,7 @@ class SagaRepository(Generic[ModelT]):
         return saga
 
     async def get_for_update(self, session: AsyncSession, saga_id: UUID) -> ModelT:
+        """Return one saga row by id and lock it for update."""
         stmt: Select[tuple[ModelT]] = (
             select(self.model_class)
             .where(self.model_class.id == saga_id)
@@ -51,6 +56,7 @@ class SagaRepository(Generic[ModelT]):
         session: AsyncSession,
         aggregation_id: str,
     ) -> ModelT | None:
+        """Return an active saga for the aggregation id and lock it for update."""
         stmt: Select[tuple[ModelT]] = (
             select(self.model_class)
             .where(
@@ -67,6 +73,7 @@ class SagaRepository(Generic[ModelT]):
         session: AsyncSession,
         aggregation_id: str,
     ) -> None:
+        """Raise when an active saga exists for the aggregation id."""
         existing = await self.get_active_by_aggregation_id_for_update(
             session,
             aggregation_id,
@@ -78,6 +85,7 @@ class SagaRepository(Generic[ModelT]):
             )
 
     async def create(self, session: AsyncSession, saga: ModelT) -> ModelT:
+        """Add a new saga row to the session and flush it."""
         session.add(saga)
         await session.flush()
         return saga
@@ -88,6 +96,7 @@ class SagaRepository(Generic[ModelT]):
         now: datetime,
         limit: int,
     ) -> list[ModelT]:
+        """Return suspended sagas whose deadlines are due."""
         return await self._due_by_status(
             session=session,
             status=SagaStatus.SUSPENDED,
@@ -101,6 +110,7 @@ class SagaRepository(Generic[ModelT]):
         now: datetime,
         limit: int,
     ) -> list[ModelT]:
+        """Return running sagas whose deadlines are due."""
         return await self._due_by_status(
             session=session,
             status=SagaStatus.RUNNING,
@@ -114,6 +124,7 @@ class SagaRepository(Generic[ModelT]):
         now: datetime,
         limit: int,
     ) -> list[ModelT]:
+        """Return compensating sagas whose deadlines are due."""
         return await self._due_by_status(
             session=session,
             status=SagaStatus.COMPENSATING,
@@ -129,6 +140,7 @@ class SagaRepository(Generic[ModelT]):
         now: datetime,
         limit: int,
     ) -> list[ModelT]:
+        """Return due saga rows for one status ordered by deadline."""
         stmt = (
             select(self.model_class)
             .where(
@@ -149,5 +161,6 @@ class SagaRepository(Generic[ModelT]):
 
     @staticmethod
     def _supports_skip_locked(session: AsyncSession) -> bool:
+        """Return whether the current dialect supports ``SKIP LOCKED``."""
         bind = session.get_bind()
         return bind is not None and bind.dialect.name == "postgresql"

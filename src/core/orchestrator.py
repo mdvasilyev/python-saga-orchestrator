@@ -20,13 +20,7 @@ ModelT = TypeVar("ModelT", bound=SagaStateMixin)
 
 
 class SagaOrchestrator(Generic[ModelT]):
-    """Coordinate saga execution against the host application's SQLAlchemy model.
-
-    The orchestrator persists every state transition and uses row-level locking
-    to ensure that retries, worker recovery, notifications, and compensation do
-    not race each other. Actual step logic always runs outside the transaction;
-    only state preparation/finalization is done while holding the DB lock.
-    """
+    """Execute, resume, and recover saga instances stored in the database."""
 
     def __init__(
         self,
@@ -35,15 +29,7 @@ class SagaOrchestrator(Generic[ModelT]):
         session_maker: async_sessionmaker[AsyncSession],
         execution_lease: timedelta = timedelta(minutes=5),
     ) -> None:
-        """Create an orchestrator bound to the user's saga state model.
-
-        Args:
-            model_class: Concrete SQLAlchemy model that includes ``SagaStateMixin``.
-            session_maker: Factory used for short-lived async DB sessions.
-            execution_lease: Fallback lease used for in-flight work that does not
-                declare an explicit timeout. Expired leases are reclaimed by
-                ``run_due()`` after worker/process crashes.
-        """
+        """Initialize the orchestrator dependencies and execution lease."""
         self._model_class = model_class
         self._session_maker = session_maker
         self._execution_lease = execution_lease
@@ -51,7 +37,7 @@ class SagaOrchestrator(Generic[ModelT]):
         self._registry: dict[str, SagaDefinition] = {}
 
     def register(self, name: str, saga_definition: SagaDefinition) -> None:
-        """Register an immutable saga definition under a runtime name."""
+        """Register a saga definition under a runtime name."""
         if name in self._registry:
             raise SagaDefinitionError(f"Saga '{name}' is already registered")
         self._registry[name] = saga_definition
@@ -64,11 +50,7 @@ class SagaOrchestrator(Generic[ModelT]):
         aggregation_id: str,
         trace_id: str | None = None,
     ) -> UUID:
-        """Persist a new saga instance and immediately start driving it.
-
-        A running lease for the first step is written before execution starts so
-        that ``run_due()`` can recover the saga if the process dies a mid-step.
-        """
+        """Create a new saga instance and start executing it."""
         if saga_name not in self._registry:
             raise SagaDefinitionError(f"Saga '{saga_name}' is not registered")
 
@@ -111,12 +93,7 @@ class SagaOrchestrator(Generic[ModelT]):
     async def notify(
         self, *, saga_id: UUID, token: UUID, event: Any | None = None
     ) -> bool:
-        """Resume a suspended saga if the provided execution token is current.
-
-        The token check is the zombie-event guard: stale notifications are
-        ignored. When ``event`` is provided, it is stored in saga context and made
-        available to root-step ``input_map`` functions via ``InputContext``.
-        """
+        """Resume a suspended saga when the provided execution token matches."""
         async with self._session_maker() as session:
             async with session.begin():
                 saga = await self._repository.get_for_update(session, saga_id)
@@ -143,12 +120,7 @@ class SagaOrchestrator(Generic[ModelT]):
         return True
 
     async def run_due(self, *, limit: int = 100) -> int:
-        """Recover sagas whose persisted deadlines have expired.
-
-        This method is intended to be called by a background worker or cron job.
-        It reclaims expired ``RUNNING`` leases, scheduled ``SUSPENDED`` retries,
-        and expired ``COMPENSATING`` leases, then resumes the appropriate path.
-        """
+        """Resume due running, suspended, and compensating sagas."""
         now = datetime.now(UTC)
         ready_ids: list[UUID] = []
         compensation_ids: list[UUID] = []
@@ -191,17 +163,17 @@ class SagaOrchestrator(Generic[ModelT]):
         return len(ready_ids) + len(compensation_ids)
 
     async def get_snapshot(self, saga_id: UUID) -> SagaSnapshot:
-        """Return a lightweight read model for operational visibility."""
+        """Return the snapshot view of one saga."""
         async with self._session_maker() as session:
             saga = await self._repository.get_for_update(session, saga_id)
             return self._to_snapshot(saga)
 
     async def resume(self, saga_id: UUID) -> None:
-        """Resume forward execution for an already-prepared saga instance."""
+        """Resume forward execution of one saga."""
         await self._drive(saga_id)
 
     async def resume_from_admin_retry(self, saga_id: UUID) -> None:
-        """Reset the current step after an admin retry request and run it again."""
+        """Reset the current step state and retry it."""
         async with self._session_maker() as session:
             async with session.begin():
                 saga = await self._repository.get_for_update(session, saga_id)
@@ -240,7 +212,7 @@ class SagaOrchestrator(Generic[ModelT]):
         saga_id: UUID,
         mock_output: BaseModel | dict[str, Any] | None = None,
     ) -> None:
-        """Mark the current step as successful and continue with the next step."""
+        """Mark the current step as successful and continue execution."""
         should_resume = False
 
         async with self._session_maker() as session:
@@ -305,7 +277,7 @@ class SagaOrchestrator(Generic[ModelT]):
             await self._drive(saga_id)
 
     async def _drive(self, saga_id: UUID) -> None:
-        """Run forward execution until the saga blocks or reaches a terminal state."""
+        """Execute forward steps until the saga stops progressing."""
         while True:
             prep = await self._prepare_step(saga_id)
             if prep is None:
@@ -347,12 +319,7 @@ class SagaOrchestrator(Generic[ModelT]):
                 return
 
     async def _prepare_step(self, saga_id: UUID) -> dict[str, Any] | None:
-        """Lock the saga row and prepare one forward step execution.
-
-        This method assigns/refreshes the step execution token and persisted
-        deadline before the user step code runs. That makes in-flight execution
-        recoverable after the process crashes.
-        """
+        """Load saga state and prepare the current forward step for execution."""
         async with self._session_maker() as session:
             async with session.begin():
                 saga = await self._repository.get_for_update(session, saga_id)
@@ -399,12 +366,7 @@ class SagaOrchestrator(Generic[ModelT]):
         error: Exception | None,
         attempt_number: int,
     ) -> bool:
-        """Persist the result of one forward step attempt.
-
-        Returns ``True`` when the next forward step can be executed immediately.
-        Returns ``False`` when execution should stop because the saga completed,
-        suspended for retry, failed, or switched into compensation.
-        """
+        """Persist one forward step result and return whether execution continues."""
         async with self._session_maker() as session:
             async with session.begin():
                 saga = await self._repository.get_for_update(session, saga_id)
@@ -481,7 +443,7 @@ class SagaOrchestrator(Generic[ModelT]):
         return False
 
     async def _run_compensation(self, saga_id: UUID) -> None:
-        """Execute reverse-order compensation until rollback blocks or finishes."""
+        """Execute compensation steps until rollback stops."""
         while True:
             comp = await self._prepare_compensation(saga_id)
             if comp is None:
@@ -510,12 +472,7 @@ class SagaOrchestrator(Generic[ModelT]):
                 return
 
     async def _prepare_compensation(self, saga_id: UUID) -> dict[str, Any] | None:
-        """Lock the saga row and prepare one compensation step.
-
-        The method reconstructs the original input/output pair from
-        ``step_history`` and persists a fresh compensation lease before user
-        compensation code runs.
-        """
+        """Load saga state and prepare the next compensation step."""
         async with self._session_maker() as session:
             async with session.begin():
                 saga = await self._repository.get_for_update(session, saga_id)
@@ -570,7 +527,7 @@ class SagaOrchestrator(Generic[ModelT]):
         original_output: BaseModel,
         error: Exception | None,
     ) -> bool:
-        """Persist one compensation result and decide whether rollback continues."""
+        """Persist one compensation result and return whether rollback continues."""
         async with self._session_maker() as session:
             async with session.begin():
                 saga = await self._repository.get_for_update(session, saga_id)
@@ -626,12 +583,7 @@ class SagaOrchestrator(Generic[ModelT]):
         step_def: StepDefinition[Any, Any],
         context: dict[str, Any],
     ) -> BaseModel:
-        """Materialize a step input model from the saga context.
-
-        Root steps receive ``InputContext``. Dependent steps receive the previous
-        step's typed output model. ``input_map`` may return either the concrete
-        input model instance or a ``dict`` that can be validated into it.
-        """
+        """Build the input model for one step from saga context."""
         if step_def.depends_on is not None:
             dep_payload = context.get("step_outputs", {}).get(
                 step_def.depends_on.step_id
@@ -663,7 +615,7 @@ class SagaOrchestrator(Generic[ModelT]):
         )
 
     def _serialize_value(self, value: Any) -> Any:
-        """Convert nested Pydantic models into JSON-serializable structures."""
+        """Convert values into JSON-serializable structures."""
         if isinstance(value, BaseModel):
             return value.model_dump(mode="json")
         if isinstance(value, dict):
@@ -684,7 +636,7 @@ class SagaOrchestrator(Generic[ModelT]):
         step_output: BaseModel | None,
         error: Exception | None,
     ) -> dict[str, Any]:
-        """Build one history record stored in ``step_history``."""
+        """Return one step history record."""
         return {
             "timestamp": datetime.now(UTC).isoformat(),
             "phase": phase,
@@ -702,6 +654,7 @@ class SagaOrchestrator(Generic[ModelT]):
 
     @staticmethod
     def _has_compensation_history(step_history: list[dict[str, Any]]) -> bool:
+        """Return whether step history contains a compensation entry."""
         return any(entry.get("phase") == "compensate" for entry in step_history)
 
     def _running_deadline_for_step(
@@ -710,14 +663,14 @@ class SagaOrchestrator(Generic[ModelT]):
         *,
         now: datetime,
     ) -> datetime:
-        """Compute the deadline used to recover an in-flight unit of work."""
+        """Return the deadline for the current step execution."""
         if step_def.timeout is not None:
             return now + step_def.timeout
         return now + self._execution_lease
 
     @staticmethod
     def _to_snapshot(saga: ModelT) -> SagaSnapshot:
-        """Project the ORM row into the lightweight admin snapshot model."""
+        """Convert a saga ORM object into a snapshot model."""
         return SagaSnapshot(
             id=saga.id,
             aggregation_id=saga.aggregation_id,

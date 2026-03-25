@@ -15,6 +15,8 @@ ModelT = TypeVar("ModelT", bound=SagaStateMixin)
 
 
 class SagaAdmin(Generic[ModelT]):
+    """Provide administrative operations for persisted saga instances."""
+
     def __init__(
         self,
         *,
@@ -22,12 +24,14 @@ class SagaAdmin(Generic[ModelT]):
         session_maker: async_sessionmaker[AsyncSession],
         orchestrator: SagaOrchestrator[ModelT],
     ) -> None:
+        """Initialize the admin API dependencies."""
         self._model_class = model_class
         self._session_maker = session_maker
         self._repository = SagaRepository(model_class)
         self._orchestrator = orchestrator
 
     async def get_saga(self, saga_id: UUID) -> dict[str, Any]:
+        """Return a serialized snapshot of one saga."""
         async with self._session_maker() as session:
             async with session.begin():
                 saga = await self._repository.get(session, saga_id)
@@ -52,6 +56,7 @@ class SagaAdmin(Generic[ModelT]):
                 }
 
     async def retry_step(self, saga_id: UUID) -> None:
+        """Retry the current failed step of a saga."""
         await self._orchestrator.resume_from_admin_retry(saga_id)
 
     async def skip_step(
@@ -59,9 +64,11 @@ class SagaAdmin(Generic[ModelT]):
         saga_id: UUID,
         mock_output: BaseModel | dict[str, Any] | None = None,
     ) -> None:
+        """Skip the current suspended step using a provided output value."""
         await self._orchestrator.skip_current_step(saga_id, mock_output)
 
     async def abort(self, saga_id: UUID) -> None:
+        """Mark a saga as failed and invalidate its current execution token."""
         async with self._session_maker() as session:
             async with session.begin():
                 saga = await self._repository.get_for_update(session, saga_id)

@@ -20,7 +20,10 @@ from ..domain.models import (
 
 
 class SagaBuilder:
+    """Build a saga definition from ordered step definitions."""
+
     def __init__(self, *, compensate_on_failure: bool = True) -> None:
+        """Initialize the builder configuration."""
         self._steps: list[StepDefinition[Any, Any]] = []
         self._compensate_on_failure = compensate_on_failure
 
@@ -34,6 +37,7 @@ class SagaBuilder:
         depends_on: StepRef[Any] | None = None,
         step_id: str | None = None,
     ) -> StepRef[Any]:
+        """Add one step definition and return a reference to its output."""
         if not callable(input_map):
             raise SagaDefinitionError("input_map must be callable")
         self.validate_input_map_types(input_map, step.input_model, depends_on)
@@ -54,6 +58,7 @@ class SagaBuilder:
         return StepRef(step_id=normalized_step_id, output_model=step.output_model)
 
     def build(self) -> SagaDefinition:
+        """Return the final saga definition."""
         if not self._steps:
             raise SagaDefinitionError("Saga must contain at least one step")
         return SagaDefinition(
@@ -67,6 +72,7 @@ class SagaBuilder:
         expected_input_model: type[BaseModel],
         depends_on: StepRef[Any] | None,
     ) -> None:
+        """Validate the input and return type annotations of ``input_map``."""
         hints = get_type_hints(input_map)
         params = list(inspect.signature(input_map).parameters.values())
 
