@@ -2,7 +2,7 @@
 
 from .builder import SagaDefinition
 from .retry import ExponentialRetry, FixedRetry, NoRetry, RetryPolicy
-from .saga_snapshot import SagaSnapshot
+from .saga_snapshot import SagaAdminSnapshot, SagaSnapshot
 from .step import BaseStep, InputContext, StepDefinition, StepInputMap, StepRef
 
 __all__ = [
@@ -11,6 +11,7 @@ __all__ = [
     "NoRetry",
     "FixedRetry",
     "ExponentialRetry",
+    "SagaAdminSnapshot",
     "SagaSnapshot",
     "StepRef",
     "InputContext",
