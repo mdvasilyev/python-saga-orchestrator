@@ -212,6 +212,16 @@ class SagaOrchestrator(Generic[ModelT]):
 
                 saga_name = saga.context["saga_name"]
                 definition = self._registry[saga_name]
+                if saga.current_step_index >= len(definition.steps):
+                    raise SagaStateError(
+                        "Cannot retry saga because there is no current step to resume"
+                    )
+                if saga.status == SagaStatus.FAILED and self._has_compensation_history(
+                    saga.step_history
+                ):
+                    raise SagaStateError(
+                        "Cannot retry saga after compensation has already started"
+                    )
                 step_def = definition.steps[saga.current_step_index]
 
                 saga.status = SagaStatus.RUNNING
@@ -236,9 +246,10 @@ class SagaOrchestrator(Generic[ModelT]):
         async with self._session_maker() as session:
             async with session.begin():
                 saga = await self._repository.get_for_update(session, saga_id)
-                if saga.status in {SagaStatus.COMPLETED, SagaStatus.FAILED}:
+                if saga.status != SagaStatus.SUSPENDED:
                     raise SagaStateError(
-                        f"Cannot skip step in terminal status {saga.status.value}"
+                        "Cannot skip step unless saga is suspended on the current step "
+                        f"(status={saga.status.value})"
                     )
 
                 saga_name = saga.context["saga_name"]
@@ -688,6 +699,10 @@ class SagaOrchestrator(Generic[ModelT]):
             ),
             "error": repr(error) if error is not None else None,
         }
+
+    @staticmethod
+    def _has_compensation_history(step_history: list[dict[str, Any]]) -> bool:
+        return any(entry.get("phase") == "compensate" for entry in step_history)
 
     def _running_deadline_for_step(
         self,
