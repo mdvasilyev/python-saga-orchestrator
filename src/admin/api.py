@@ -62,6 +62,10 @@ class SagaAdmin(Generic[ModelT]):
         """Skip the current suspended step using a provided output value."""
         await self._orchestrator.skip_current_step(saga_id, mock_output)
 
+    async def compensate_step(self, saga_id: UUID) -> None:
+        """Start or resume compensation for one saga."""
+        await self._orchestrator.start_compensation_from_admin(saga_id)
+
     async def abort(self, saga_id: UUID) -> None:
         """Mark a saga as failed and invalidate its current execution token."""
         async with self._session_maker() as session:

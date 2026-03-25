@@ -207,6 +207,32 @@ class SagaOrchestrator(Generic[ModelT]):
 
         await self._drive(saga_id)
 
+    async def start_compensation_from_admin(self, saga_id: UUID) -> None:
+        """Switch one saga into compensation and execute rollback."""
+        async with self._session_maker() as session:
+            async with session.begin():
+                saga = await self._repository.get_for_update(session, saga_id)
+                if saga.status not in {
+                    SagaStatus.SUSPENDED,
+                    SagaStatus.FAILED,
+                    SagaStatus.COMPENSATING,
+                }:
+                    raise SagaStateError(
+                        "Cannot start compensation unless saga is suspended, failed, "
+                        f"or already compensating (status={saga.status.value})"
+                    )
+                if saga.current_step_index <= 0:
+                    raise SagaStateError(
+                        "Cannot compensate saga because there is no completed step to roll back"
+                    )
+
+                saga.status = SagaStatus.COMPENSATING
+                saga.retry_counter = 0
+                saga.step_execution_token = uuid.uuid4()
+                saga.deadline_at = datetime.now(UTC) + self._execution_lease
+
+        await self._run_compensation(saga_id)
+
     async def skip_current_step(
         self,
         saga_id: UUID,
