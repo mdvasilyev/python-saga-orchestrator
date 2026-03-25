@@ -27,6 +27,8 @@ class InputContext:
     initial_data: Any
     context: dict[str, Any]
     step_outputs: dict[str, Any]
+    latest_event: Any | None = None
+    events: list[Any] | None = None
 
 
 RootInputMap: TypeAlias = Callable[[InputContext], InputModelT | dict[str, Any]]
