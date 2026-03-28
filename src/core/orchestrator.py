@@ -12,7 +12,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ..domain.exceptions import SagaDefinitionError, SagaStateError
 from ..domain.mixins import SagaStateMixin
-from ..domain.models import InputContext, SagaDefinition, SagaSnapshot, StepDefinition
+from ..domain.models import (
+    InputContext,
+    SagaAdminSnapshot,
+    SagaDefinition,
+    SagaSnapshot,
+    StepDefinition,
+)
 from ..domain.models.enums import SagaStatus
 from .repository import SagaRepository
 
@@ -168,6 +174,25 @@ class SagaOrchestrator(Generic[ModelT]):
             saga = await self._repository.get_for_update(session, saga_id)
             return self._to_snapshot(saga)
 
+    async def get_admin_snapshot(self, saga_id: UUID) -> SagaAdminSnapshot:
+        """Return the administrative view of one saga."""
+        async with self._session_maker() as session:
+            async with session.begin():
+                saga = await self._repository.get(session, saga_id)
+                return SagaAdminSnapshot(
+                    id=saga.id,
+                    aggregation_id=saga.aggregation_id,
+                    trace_id=saga.trace_id,
+                    status=saga.status,
+                    current_step_index=saga.current_step_index,
+                    step_execution_token=saga.step_execution_token,
+                    retry_counter=saga.retry_counter,
+                    deadline_at=saga.deadline_at,
+                    last_error=saga.last_error,
+                    context=saga.context,
+                    step_history=saga.step_history,
+                )
+
     async def resume(self, saga_id: UUID) -> None:
         """Resume forward execution of one saga."""
         await self._drive(saga_id)
@@ -232,6 +257,16 @@ class SagaOrchestrator(Generic[ModelT]):
                 saga.deadline_at = datetime.now(UTC) + self._execution_lease
 
         await self._run_compensation(saga_id)
+
+    async def abort(self, saga_id: UUID) -> None:
+        """Mark a saga as failed and invalidate its current execution token."""
+        async with self._session_maker() as session:
+            async with session.begin():
+                saga = await self._repository.get_for_update(session, saga_id)
+                saga.status = SagaStatus.FAILED
+                saga.deadline_at = None
+                saga.last_error = saga.last_error or "Aborted by admin"
+                saga.step_execution_token = uuid.uuid4()
 
     async def skip_current_step(
         self,
