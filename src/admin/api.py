@@ -5,7 +5,7 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
-from ..core import SagaOrchestrator
+from ..core.engine import SagaEngine
 from ..domain.mixins import SagaStateMixin
 from ..domain.models import SagaAdminSnapshot
 
@@ -17,18 +17,18 @@ class SagaAdmin(Generic[ModelT]):
 
     def __init__(
         self,
-        orchestrator: SagaOrchestrator[ModelT],
+        engine: SagaEngine[ModelT],
     ) -> None:
         """Initialize the admin API facade."""
-        self._orchestrator = orchestrator
+        self._engine = engine
 
     async def get_saga(self, saga_id: UUID) -> SagaAdminSnapshot:
         """Return the current persisted state of one saga."""
-        return await self._orchestrator.get_admin_snapshot(saga_id)
+        return await self._engine.get_admin_snapshot(saga_id)
 
     async def retry_step(self, saga_id: UUID) -> None:
         """Retry the current failed step of a saga."""
-        await self._orchestrator.resume_from_admin_retry(saga_id)
+        await self._engine.retry_step(saga_id)
 
     async def skip_step(
         self,
@@ -36,12 +36,12 @@ class SagaAdmin(Generic[ModelT]):
         mock_output: BaseModel | dict[str, Any] | None = None,
     ) -> None:
         """Skip the current suspended step using a provided output value."""
-        await self._orchestrator.skip_current_step(saga_id, mock_output)
+        await self._engine.skip_step(saga_id, mock_output)
 
     async def compensate_step(self, saga_id: UUID) -> None:
         """Start or resume compensation for one saga."""
-        await self._orchestrator.start_compensation_from_admin(saga_id)
+        await self._engine.compensate_step(saga_id)
 
     async def abort(self, saga_id: UUID) -> None:
         """Mark a saga as failed and invalidate its current execution token."""
-        await self._orchestrator.abort(saga_id)
+        await self._engine.abort(saga_id)
