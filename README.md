@@ -1,245 +1,307 @@
-# Техническое Задание: Python Saga Orchestrator
+# python-saga-orchestrator
 
-## 0. Аннотация
+Lightweight embedded saga orchestration for `asyncio` Python services.
 
-Разрабатывается **`Lightweight Embedded Saga Orchestrator`** — легковесная библиотека для управления распределенными
-транзакциями в Python-сервисах.
-В отличие от тяжеловесных платформ (Temporal, Cadence), требующих развертывания отдельного кластера серверов и БД,
-данное решение интегрируется непосредственно в кодовую базу микросервиса (pattern "Library-based Orchestration").
-**Результат:** Инструмент, позволяющий описывать сложные асинхронные бизнес-процессы (например, деплой AI-моделей)
-линейным Python-кодом, обеспечивая гарантии ACID на уровне бизнес-логики (Saga) и автоматическое восстановление после
-сбоев без накладных расходов на инфраструктуру.
+The library implements the Saga pattern for long-running business processes that:
+- span multiple steps,
+- call external systems,
+- need retry and compensation,
+- must survive worker crashes and process restarts.
 
-## 1. Введение и Актуальность
+Unlike external workflow platforms, this library runs inside your service and stores saga state in your application's database through SQLAlchemy.
 
-### 1.1. Проблематика и Сравнение с аналогами
+## What it provides
 
-В современной экосистеме Python существует разрыв между простыми планировщиками задач и Enterprise-системами
-оркестрации.
+- typed step definitions with `Pydantic` models
+- saga construction with `SagaBuilder` and `StepRef`
+- persisted saga state through `SagaStateMixin`
+- runtime execution through `SagaOrchestrator` and `SagaEngine`
+- retry, timeout, recovery, and compensation
+- administrative operations through `SagaAdmin`
+- PostgreSQL-first reliability using `SELECT ... FOR UPDATE`
 
-1. **Проблема Celery/Dramatiq (Task Queues):** Они реализуют паттерн "Fire and Forget". Построение цепочек (Canvas) в
-   них хрупкое: потеря состояния при падении воркера, отсутствие нативной поддержки компенсирующих транзакций (Rollback)
-   и сложность отладки распределенного состояния.
-2. **Проблема Temporal/Cadence (External Orchestrators):** Являются "золотым стандартом", но обладают высоким порогом
-   входа ("Operational Overhead"). Они требуют развертывания проприетарного сервера, отдельной базы данных (
-   Cassandra/Postgres) и ElasticSearch для поиска. Для проектов среднего размера или изолированных контуров это
-   избыточная инфраструктурная нагрузка.
+## Installation
 
-**Уникальность предлагаемого решения:**
+Requirements:
+- Python 3.12+
+- PostgreSQL for production-grade execution semantics
 
-* **Agnostic Persistence:** Использование существующей БД приложения через SQLAlchemy Mixin. Нет "своей" базы данных —
-  нет лишней поддержки.
-* **Composition Root & Strict Typing:** В отличие от конфигурации через YAML/JSON, процессы описываются строгим
-  Python-кодом с проверкой типов (Pydantic) на этапе старта приложения (Static Analysis compliant).
-* **Zero-Infrastructure:** Библиотека работает внутри процесса приложения, используя `asyncio`.
+Install from source:
 
-### 1.2. Технические Вызовы и Сложности
-
-Разработка оркестратора сопряжена с решением фундаментальных проблем распределенных систем:
-
-* **Проблема "Dual Write" и Атомарность:** Сложность согласования состояния саги в БД и отправки событий во внешние
-  системы (брокеры, API). Необходимо гарантировать, что шаг не будет помечен как выполненный, если физическое действие
-  не произошло (и наоборот).
-* **Конкурентность и Race Conditions:** В высоконагруженной среде несколько событий (например, "таймаут" и "ответ от
-  сервиса") могут прийти одновременно. Требуется реализация пессимистичных блокировок (`SELECT FOR UPDATE`) и
-  версионирование состояния для предотвращения коллизий.
-* **Идемпотентность и "Зомби-процессы":** Обработка ситуаций, когда шаг "завис", был перезапущен оркестратором, а
-  затем "отвисший" старый процесс попытался изменить состояние. Введение механизма `execution_token` для отсечения
-  устаревших событий.
-* **Сериализация и Эволюция Схемы:** Хранение истории шагов (Payload) в JSONB требует строгой совместимости при
-  обновлении версий Pydantic-моделей приложения.
-
-### 1.3. Практическая значимость (Кейс: AI Inference Platform)
-
-Проект внедряется в систему управления вычислительными мощностями для AI (GPU-кластеры).
-
-**Сценарий:** Пользователь запрашивает деплой модели Llama-2.
-**Бизнес-процесс (Сага):**
-
-1. *Check model* Проверка существовании модели
-2. *Change Status* Изменения статуса модели
-3. *Resource Reservation:* Проверка квот и аллокация GPU.
-4. *Container Deploy:* Запуск контейнера в K8s.
-5. *Health Check:* Ожидание готовности модели принимать запросы.
-6. *Update model* Обновление данных о модели (статус, количество реплик, адрес доступа)
-
-**Почему здесь необходима Сага:**
-
-* **Длительность:** Процесс занимает от минут до часов. Синхронный HTTP-запрос отвалится по тайм-ауту.
-* **Стоимость ошибки:** Если шаг 3 упал, а шаг 1 не отменен (компенсация), дорогие GPU-ресурсы останутся
-  заблокированными ("утечка ресурсов"), что недопустимо в условиях дефицита мощностей.
-* **Гибкость:** Возможность "пропустить" шаг скачивания, если модель кеширована, или добавить шаг "Pre-heating" без
-  переписывания всего кода.
-
-**Технологический стек:**
-
-* **Language:** Python 3.11+
-* **Core:** `asyncio`
-* **Validation:** Pydantic v2
-* **Persistence:** SQLAlchemy (Async) / Agnostic Mixin
-
-### Итого
-
-**Продукт:** Асинхронная библиотека для оркестрации распределенных транзакций (Saga Pattern).
-**Цель:** Обеспечить надежное выполнение бизнес-процессов в распределенной среде с гарантией целостности данных и
-прозрачной обработкой сбоев.
-
-## 2. Архитектура и Хранение Данных
-
-### 2.1. Концепция "Mixin Persistence"
-
-Библиотека не навязывает собственную структуру таблиц, а предоставляет `SagaStateMixin` для внедрения в модели
-приложения.
-
-**Требования к модели (Schema):**
-
-1. **`id` (PK, UUID):** Идентификатор технической транзакции.
-2. **`aggregation_id` (String, Indexed):** Бизнес-ключ (например, `order_uid`). Используется для дедупликации (Unique
-   Constraint для активных саг).
-3. **`trace_id` (String):** Trace ID для интеграции с OpenTelemetry/Jaeger.
-4. **`status` (Enum):** `RUNNING`, `SUSPENDED`, `FAILED`, `COMPENSATING`, `COMPLETED`.
-5. **`current_step_index` (Int):** Курсор текущего шага.
-6. **`step_execution_token` (UUID, Nullable):** Токен защиты от повторной обработки событий ("зомби-ивентов").
-7. **`context` (JSONB):** Текущее состояние данных (Payload).
-8. **`step_history` (JSONB):** Журнал выполнения. Обязательно хранит копии `Input` и `Output` каждого шага.
-9. **`deadline_at` (Datetime, Nullable):** Глобальный таймаут саги или текущего шага.
-10. **`retry_counter` (Int):** Счетчик попыток для текущего шага.
-
-### 2.2. Привязка Модели (Model Binding)
-
-Для выполнения операций с БД Оркестратор должен быть инициализирован конкретным классом модели пользователя.
-
-* **Generics:** Оркестратор типизируется классом модели (`TypeVar("M", bound=SagaStateMixin)`).
-* **Initialization:** В конструктор передается класс модели (`model_class`) и фабрика сессий (`session_maker`).
-
-### 2.3. Управление Транзакциями
-
-* **State Transition Only:** Транзакции БД открываются только на момент перехода между шагами или изменения статуса.
-* **Locking:** Любое чтение состояния для изменения (`notify`, `retry`, `timeout`) выполняется строго через *
-  *`SELECT ... FOR UPDATE`**.
-
-## 3. User Experience (DX) и API
-
-Архитектура строится на принципе **Composition Root**: все шаги и определения саг инициализируются и собираются один раз
-при старте приложения.
-
-### 3.1. Реализация Шага (Step Implementation)
-
-Шаг реализуется как **Singleton**. Он хранит инфраструктурные зависимости, но не состояние конкретной саги.
-
-```python
-class ReserveStockStep(BaseStep[StockInput, StockOutput]):
-    # Инфраструктура и конфигурация передаются в __init__
-    def __init__(self, stock_client: AsyncHttpClient, region: str):
-        self.client = stock_client
-        self.region = region
-
-    # Логика исполнения принимает только контекст саги
-    async def execute(self, inp: StockInput) -> StockOutput:
-        result = await self.client.reserve(inp.sku, inp.qty, region=self.region)
-        return StockOutput(reservation_id=result.id)
-
-    async def compensate(self, inp: StockInput, out: StockOutput) -> None:
-        await self.client.cancel(out.reservation_id)
+```bash
+pip install .
 ```
 
-### 3.2. Сборка Саги (Saga Definition)
+Or install development dependencies:
 
-Используется **Builder** с поддержкой строгой типизации ссылок (`StepRef`). В `add_step` передается **экземпляр** шага.
+```bash
+pip install .[dev]
+```
+
+## Core concepts
+
+### `BaseStep`
+
+Each saga step is a class with:
+- `execute(inp) -> out`
+- optional `compensate(inp, out) -> None`
+
+Steps are regular Python objects. In practice they are created once at application startup and reused.
+
+### `SagaBuilder`
+
+`SagaBuilder` creates an immutable `SagaDefinition`.  
+Each added step includes:
+- the step object
+- `input_map`
+- optional timeout
+- retry policy
+- optional dependency on a previous step via `StepRef`
+
+### `SagaStateMixin`
+
+Your SQLAlchemy model inherits `SagaStateMixin` to store:
+- current status
+- current step index
+- execution token
+- context
+- step history
+- deadline
+- retry counter
+
+### `SagaOrchestrator`
+
+`SagaOrchestrator` is the public runtime API used by application code:
+- `register(...)`
+- `start(...)`
+- `notify(...)`
+- `run_due(...)`
+- `get_snapshot(...)`
+
+### `SagaAdmin`
+
+`SagaAdmin` exposes operational controls:
+- `get_saga(...)`
+- `retry_step(...)`
+- `skip_step(...)`
+- `compensate_step(...)`
+- `abort(...)`
+
+## Quick start
 
 ```python
-# 1. Инициализация зависимостей
-stock_client = StockClient(...)
+from datetime import timedelta
 
-# 2. Создание инстанса шага
-reserve_step = ReserveStockStep(stock_client, region="msk")
+from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlalchemy.orm import DeclarativeBase
 
-# 3. Сборка определения
-saga_def = SagaBuilder()
-
-# Регистрация шага с параметрами исполнения
-ref_1 = saga_def.add_step(
-    step=reserve_step,
-    input_map=lambda ctx: StockInput(sku=ctx.initial.sku, qty=1),
-    timeout=timedelta(seconds=10),
-    retry_policy=RetryPolicy.exponential(max_attempts=3)
+from saga_orchestrator import (
+    BaseStep,
+    ExponentialRetry,
+    SagaAdmin,
+    SagaBuilder,
+    SagaOrchestrator,
+    SagaStateMixin,
 )
-```
 
-### 3.3. Инициализация и Запуск (Runtime)
 
-Инициализация Оркестратора и регистрация схем происходит в точке входа приложения (`main.py` / Container).
+class Base(DeclarativeBase):
+    pass
 
-```python
-# 1. User Model
+
 class OrderSagaState(Base, SagaStateMixin):
-    __tablename__ = "order_sagas"
+    __tablename__ = "order_saga_state"
 
 
-# 2. Composition Root
-orchestrator = SagaOrchestrator[OrderSagaState](
-    model_class=OrderSagaState,
-    session_maker=async_session_factory
-)
-orchestrator.register("create_order_v1", saga_def)
+class ReserveInput(BaseModel):
+    order_id: str
 
-# 3. Service Layer Call
-await orchestrator.start(
+
+class ReserveOutput(BaseModel):
+    reservation_id: str
+
+
+class ChargeInput(BaseModel):
+    reservation_id: str
+
+
+class ChargeOutput(BaseModel):
+    payment_id: str
+
+
+class ReserveInventoryStep(BaseStep[ReserveInput, ReserveOutput]):
+    async def execute(self, inp: ReserveInput) -> ReserveOutput:
+        return ReserveOutput(reservation_id=f"res-{inp.order_id}")
+
+    async def compensate(self, inp: ReserveInput, out: ReserveOutput) -> None:
+        return None
+
+
+class ChargePaymentStep(BaseStep[ChargeInput, ChargeOutput]):
+    async def execute(self, inp: ChargeInput) -> ChargeOutput:
+        return ChargeOutput(payment_id=f"pay-{inp.reservation_id}")
+
+
+def build_order_saga():
+    builder = SagaBuilder()
+
+    reserve_ref = builder.add_step(
+        step=ReserveInventoryStep(),
+        input_map=lambda ctx: ReserveInput(order_id=ctx.initial_data["order_id"]),
+    )
+
+    builder.add_step(
+        step=ChargePaymentStep(),
+        depends_on=reserve_ref,
+        input_map=lambda out: ChargeInput(reservation_id=out.reservation_id),
+        retry_policy=ExponentialRetry(
+            max_attempts=3,
+            base_delay=timedelta(seconds=5),
+        ),
+    )
+
+    return builder.build()
+
+
+def setup_saga(
+    session_maker: async_sessionmaker,
+) -> tuple[SagaOrchestrator[OrderSagaState], SagaAdmin[OrderSagaState]]:
+    orchestrator = SagaOrchestrator[OrderSagaState](
+        model_class=OrderSagaState,
+        session_maker=session_maker,
+    )
+    orchestrator.register("create_order_v1", build_order_saga())
+
+    admin = SagaAdmin[OrderSagaState](engine=orchestrator.engine)
+    return orchestrator, admin
+```
+
+Start a saga:
+
+```python
+orchestrator, admin = setup_saga(session_maker)
+
+saga_id = await orchestrator.start(
     saga_name="create_order_v1",
-    initial_data=data,
-    aggregation_id=str(data.order_id)
+    initial_data={"order_id": "order-123"},
+    aggregation_id="order-123",
 )
 ```
 
-## 4. Логика Исполнения (Execution Engine)
+## Recovery model
 
-### 4.1. Обработка Ошибок и Retry Policy
+The library persists enough state to recover work after failures:
 
-Если метод `execute` выбрасывает исключение:
+- `RUNNING` sagas with expired execution leases can be reclaimed
+- `SUSPENDED` sagas with expired retry deadlines can be resumed
+- `COMPENSATING` sagas can continue rollback after a crash
 
-1. Оркестратор инкрементирует `retry_counter` в БД.
-2. Сравнивает с политикой шага (`Fixed`, `Exponential`, `None`).
-3. **Если попытки есть:**
-    * Выставляет `deadline_at = now + delay`.
-    * Переводит сагу в статус `SUSPENDED`.
-4. **Если попытки исчерпаны:**
-    * Переводит сагу в статус `FAILED` (или `COMPENSATING`, если требуется откат).
+The recovery entry point is:
 
-### 4.2. Timeouts и Zombies
+```python
+await orchestrator.run_due(limit=100)
+```
 
-* **Step Timeout:** Если выполнение шага превышает `timeout`, задача отменяется (`CancelledError`), запускается механизм
-  Retry/Fail. Предоставить API запуска воркера/cron задачи
-* **Zombie Protection:** При переходе в `SUSPENDED` генерируется новый `step_execution_token`. При возобновлении (
-  `notify`) токен сверяется. Несовпадение — игнорирование события.
+In production this should be called by a background worker or scheduled job.
 
-## 5. Observability и Operations
+## Notifications and external events
 
-### 5.1. Admin API
+Use `notify(...)` when a suspended saga should resume because of an external signal:
 
-Библиотека должна предоставлять интерфейс `SagaAdmin` со следующими методами:
+```python
+accepted = await orchestrator.notify(
+    saga_id=saga_id,
+    token=current_token,
+    event={"approved": True},
+)
+```
 
-1. **`get_saga(id)`**: Возвращает состояние, историю шагов, текущую ошибку и счетчик ретраев.
-2. **`retry_step(id)`**: Сбрасывает ошибку и `retry_counter`, немедленно запускает текущий шаг.
-3. **`skip_step(id, mock_output=None)`**: Помечает шаг успешным, записывает `mock_output` в историю и переходит к
-   следующему шагу.
-4. **`abort(id)`**: Принудительно останавливает сагу (статус `FAILED`).
+The event payload is stored in saga context and can be used by root-step `input_map` functions through `InputContext`.
 
-### 5.2. Tracing
+## Administrative operations
 
-* Оркестратор захватывает Trace ID при старте.
-* При восстановлении контекста (в воркере или по событию) Trace ID восстанавливается для корректного сквозного
-  логирования.
+Get the full persisted state:
 
-## 6. Критерии Приемки (Definition of Done)
+```python
+snapshot = await admin.get_saga(saga_id)
+print(snapshot.status)
+print(snapshot.step_history)
+```
 
-1. **Architecture:** Реализован паттерн Composition Root (шаги-синглтоны, регистрация инстансов).
-2. **Strict Typing:** Работает `StepRef` и валидация типов в `SagaBuilder` (совместимость Output -> Input).
-3. **Persistence:** Корректная работа с пользовательской моделью через Generic-привязку (`model_class`).
-4. **Reliability:**
-    * Работает `SELECT FOR UPDATE`.
-    * Реализована идемпотентность через `step_execution_token`.
-    * Работают Retry Policies (тест с временным сбоем).
-5. **Data Integrity:** В `step_history` сохраняются полные копии Input/Output (сериализация Pydantic -> JSONB).
-6. **Ops:** Реализован и протестирован Admin API (`retry`, `skip`).
-7. **README** Описание библиотеки
-8. **Example** Пример работы в сложных ситуациях
+Retry the current failed step:
+
+```python
+await admin.retry_step(saga_id)
+```
+
+Skip the current suspended step:
+
+```python
+await admin.skip_step(
+    saga_id,
+    mock_output={"payment_id": "manual-payment"},
+)
+```
+
+Start compensation manually:
+
+```python
+await admin.compensate_step(saga_id)
+```
+
+Abort the saga:
+
+```python
+await admin.abort(saga_id)
+```
+
+## Persistence expectations
+
+The library is PostgreSQL-first.
+
+Important implementation details:
+- state transitions are performed inside database transactions
+- mutating reads use `SELECT ... FOR UPDATE`
+- JSON state is stored in `context` and `step_history`
+- `step_execution_token` is used to reject stale events and stale step completions
+
+SQLite may be sufficient for local experiments, but PostgreSQL should be used for integration testing and production use.
+
+## Example workflow
+
+A runnable end-to-end example is available in:
+
+- [`test.py`](./test.py)
+
+It demonstrates:
+- retry and recovery through `run_due()`
+- compensation after failure
+- admin-driven step skipping
+
+## Running tests
+
+Run unit tests:
+
+```bash
+pytest -q tests/unit
+```
+
+Run PostgreSQL integration tests:
+
+```bash
+export TEST_DATABASE_URL='postgresql+asyncpg://postgres:postgres@localhost:5432/saga_test_db'
+pytest -q tests/integration
+```
+
+The integration fixture creates an isolated schema per test, so it does not require a dedicated empty database schema.
+
+## Current limitations
+
+- the implementation is optimized for sequential saga execution, not parallel DAG execution
+- PostgreSQL is the intended reliability target
+- tracing integration is not implemented yet
+
+## License
+
+MIT. See [`LICENSE`](./LICENSE).
