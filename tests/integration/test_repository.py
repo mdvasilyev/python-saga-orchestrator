@@ -6,9 +6,9 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from src.core import SagaRepository
-from src.domain.exceptions import ActiveSagaAlreadyExistsError, SagaNotFoundError
-from src.domain.models.enums import SagaStatus
+from saga_orchestrator.core import SagaRepository
+from saga_orchestrator.domain.exceptions import ActiveSagaAlreadyExistsError, SagaNotFoundError
+from saga_orchestrator.domain.models.enums import SagaStatus
 
 from .models import IntegrationSagaState
 

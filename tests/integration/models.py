@@ -1,6 +1,6 @@
 from sqlalchemy.orm import DeclarativeBase
 
-from src.domain.mixins import SagaStateMixin
+from saga_orchestrator.domain.mixins import SagaStateMixin
 
 
 class Base(DeclarativeBase):

@@ -7,12 +7,12 @@ from datetime import timedelta
 import pytest
 from pydantic import BaseModel
 
-from src.admin import SagaAdmin
-from src.core import SagaBuilder
-from src.core.orchestrator import SagaOrchestrator
-from src.domain.exceptions import ActiveSagaAlreadyExistsError, SagaStateError
-from src.domain.models import BaseStep, ExponentialRetry
-from src.domain.models.enums import SagaStatus
+from saga_orchestrator.admin import SagaAdmin
+from saga_orchestrator.core import SagaBuilder
+from saga_orchestrator.core.orchestrator import SagaOrchestrator
+from saga_orchestrator.domain.exceptions import ActiveSagaAlreadyExistsError, SagaStateError
+from saga_orchestrator.domain.models import BaseStep, ExponentialRetry
+from saga_orchestrator.domain.models.enums import SagaStatus
 from tests.integration.models import IntegrationSagaState
 
 

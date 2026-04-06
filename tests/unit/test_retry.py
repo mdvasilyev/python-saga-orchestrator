@@ -1,6 +1,6 @@
 from datetime import timedelta
 
-from src.domain.models import ExponentialRetry, FixedRetry, NoRetry
+from saga_orchestrator.domain.models import ExponentialRetry, FixedRetry, NoRetry
 
 
 def test_no_retry_has_no_attempts() -> None:

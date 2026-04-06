@@ -1,9 +1,9 @@
 import pytest
 from pydantic import BaseModel
 
-from src.core import SagaBuilder
-from src.domain.exceptions import SagaDefinitionError, TypeValidationError
-from src.domain.models import BaseStep, InputContext
+from saga_orchestrator.core import SagaBuilder
+from saga_orchestrator.domain.exceptions import SagaDefinitionError, TypeValidationError
+from saga_orchestrator.domain.models import BaseStep, InputContext
 
 
 class InOne(BaseModel):
