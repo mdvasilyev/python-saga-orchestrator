@@ -26,16 +26,28 @@ Requirements:
 - Python 3.12+
 - PostgreSQL for production-grade execution semantics
 
-Install from source:
+Install from PyPI:
+
+```bash
+pip install python-saga-orchestrator
+```
+
+Or with `uv`:
+
+```bash
+uv pip install python-saga-orchestrator
+```
+
+Install from the repository source:
 
 ```bash
 pip install .
 ```
 
-Or install development dependencies:
+For local development:
 
 ```bash
-pip install .[dev]
+pip install '.[dev]'
 ```
 
 ## Core concepts
