@@ -272,9 +272,13 @@ SQLite may be sufficient for local experiments, but PostgreSQL should be used fo
 
 A runnable end-to-end example is available in:
 
-- [`test.py`](./test.py)
+- [`examples/llm_deploy.py`](./examples/llm_deploy.py)
+- [`examples/retry_recovery.py`](./examples/retry_recovery.py)
+- [`examples/compensation_flow.py`](./examples/compensation_flow.py)
+- [`examples/admin_skip.py`](./examples/admin_skip.py)
 
-It demonstrates:
+These examples demonstrate:
+- basic model deployment
 - retry and recovery through `run_due()`
 - compensation after failure
 - admin-driven step skipping
