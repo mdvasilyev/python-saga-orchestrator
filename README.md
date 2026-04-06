@@ -165,7 +165,7 @@ def build_order_saga():
 
 
 def setup_saga(
-    session_maker: async_sessionmaker,
+        session_maker: async_sessionmaker,
 ) -> tuple[SagaOrchestrator[OrderSagaState], SagaAdmin[OrderSagaState]]:
     orchestrator = SagaOrchestrator[OrderSagaState](
         model_class=OrderSagaState,
