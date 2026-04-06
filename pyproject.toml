@@ -9,6 +9,9 @@ description = "Lightweight embedded saga orchestrator for asyncio Python service
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
+authors = [
+    { name = "Maxim Vasilyev" },
+]
 keywords = [
     "saga",
     "orchestration",
