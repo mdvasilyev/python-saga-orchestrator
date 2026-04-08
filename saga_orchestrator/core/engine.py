@@ -471,7 +471,11 @@ class SagaEngine(Generic[ModelT]):
                         saga.status = SagaStatus.COMPLETED
                     return saga.status == SagaStatus.RUNNING
 
-                assert error is not None
+                if error is None:
+                    raise SagaStateError(
+                        "Step finalization expected either a successful output "
+                        "or an execution error"
+                    )
                 saga.step_history.append(
                     self._history_entry(
                         phase="execute",
