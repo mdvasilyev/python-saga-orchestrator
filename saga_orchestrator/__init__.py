@@ -26,8 +26,6 @@ from .domain.models import (
 )
 from .domain.models.enums import SagaStatus
 
-__version__ = "0.1.1"
-
 __all__ = [
     "ActiveSagaAlreadyExistsError",
     "BaseStep",
@@ -53,5 +51,4 @@ __all__ = [
     "StepInputMap",
     "StepRef",
     "TypeValidationError",
-    "__version__",
 ]
