@@ -229,6 +229,18 @@ accepted = await orchestrator.notify(
 )
 ```
 
+Configure explicit event expectations through a public API:
+
+```python
+token = await orchestrator.await_event(
+    saga_id=saga_id,
+    event=AwaitingEvent(
+        event_type="model.approved",
+        correlation_id="corr-123",
+    ),
+)
+```
+
 The event payload is stored in saga context and can be used by root-step `input_map` functions through `InputContext`.
 
 ## Administrative operations

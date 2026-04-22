@@ -8,6 +8,7 @@ from typing import Any, Generic, TypeAlias, TypeVar, get_type_hints
 
 from pydantic import BaseModel
 
+from ...outbox.event import OutboxEvent
 from ..exceptions import TypeValidationError
 from .retry import RetryPolicy
 
@@ -33,6 +34,7 @@ class InputContext:
 
 RootInputMap: TypeAlias = Callable[[InputContext], InputModelT | dict[str, Any]]
 StepInputMap: TypeAlias = RootInputMap | Callable[[Any], InputModelT | dict[str, Any]]
+OutboxMap: TypeAlias = Callable[[InputModelT, OutputModelT], list[OutboxEvent] | None]
 
 
 @dataclass
@@ -43,6 +45,7 @@ class StepDefinition(Generic[InputModelT, OutputModelT]):
     timeout: timedelta | None
     retry_policy: RetryPolicy
     depends_on: StepRef[Any] | None = None
+    outbox_map: OutboxMap[InputModelT, OutputModelT] | None = None
 
     @property
     def input_model(self) -> type[InputModelT]:

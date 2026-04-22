@@ -11,6 +11,7 @@ from ..domain.models import (
     BaseStep,
     InputContext,
     NoRetry,
+    OutboxMap,
     RetryPolicy,
     SagaDefinition,
     StepDefinition,
@@ -35,11 +36,14 @@ class SagaBuilder:
         timeout: timedelta | None = None,
         retry_policy: RetryPolicy | None = None,
         depends_on: StepRef[Any] | None = None,
+        outbox_map: OutboxMap[Any, Any] | None = None,
         step_id: str | None = None,
     ) -> StepRef[Any]:
         """Add one step definition and return a reference to its output."""
         if not callable(input_map):
             raise SagaDefinitionError("input_map must be callable")
+        if outbox_map is not None and not callable(outbox_map):
+            raise SagaDefinitionError("outbox_map must be callable")
         self.validate_input_map_types(input_map, step.input_model, depends_on)
 
         normalized_step_id = step_id or f"step_{len(self._steps)}"
@@ -53,6 +57,7 @@ class SagaBuilder:
             timeout=timeout,
             retry_policy=retry_policy or NoRetry(),
             depends_on=depends_on,
+            outbox_map=outbox_map,
         )
         self._steps.append(definition)
         return StepRef(step_id=normalized_step_id, output_model=step.output_model)

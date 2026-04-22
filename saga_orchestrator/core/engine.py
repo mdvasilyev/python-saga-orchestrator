@@ -13,13 +13,18 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from ..domain.exceptions import SagaDefinitionError, SagaStateError
 from ..domain.mixins import SagaStateMixin
 from ..domain.models import (
+    AwaitingEvent,
     InputContext,
+    NotifyEvent,
+    NotifyResult,
     SagaAdminSnapshot,
     SagaDefinition,
     SagaSnapshot,
     StepDefinition,
 )
 from ..domain.models.enums import SagaStatus
+from ..outbox.models import OutboxMessageMixin, OutboxStatus
+from ..outbox.repository import OutboxRepository
 from .repository import SagaRepository
 
 ModelT = TypeVar("ModelT", bound=SagaStateMixin)
@@ -33,6 +38,7 @@ class SagaEngine(Generic[ModelT]):
         *,
         model_class: type[ModelT],
         session_maker: async_sessionmaker[AsyncSession],
+        outbox_model_class: type[OutboxMessageMixin] | None = None,
         execution_lease: timedelta = timedelta(minutes=5),
     ) -> None:
         """Initialize the engine dependencies and execution lease."""
@@ -40,12 +46,21 @@ class SagaEngine(Generic[ModelT]):
         self._session_maker = session_maker
         self._execution_lease = execution_lease
         self._repository = SagaRepository(model_class)
+        self._outbox_model_class = outbox_model_class
+        self._outbox_repository: OutboxRepository[OutboxMessageMixin] | None = None
+        if outbox_model_class is not None:
+            self._outbox_repository = OutboxRepository(outbox_model_class)
         self._registry: dict[str, SagaDefinition] = {}
 
     @property
     def repository(self) -> SagaRepository[ModelT]:
         """Return the repository used by the engine."""
         return self._repository
+
+    @property
+    def outbox_repository(self) -> OutboxRepository[OutboxMessageMixin] | None:
+        """Return the outbox repository used by the engine."""
+        return self._outbox_repository
 
     def register(self, name: str, saga_definition: SagaDefinition) -> None:
         """Register a saga definition under a runtime name."""
@@ -102,21 +117,110 @@ class SagaEngine(Generic[ModelT]):
         return saga_id
 
     async def notify(
-        self, *, saga_id: UUID, token: UUID, event: Any | None = None
+        self,
+        *,
+        saga_id: UUID,
+        token: UUID,
+        event: NotifyEvent | dict[str, Any] | Any | None = None,
     ) -> bool:
         """Resume a suspended saga when the provided execution token matches."""
+        result = await self.notify_detailed(
+            saga_id=saga_id,
+            token=token,
+            event=event,
+        )
+        return result == NotifyResult.ACCEPTED
+
+    async def notify_detailed(
+        self,
+        *,
+        saga_id: UUID,
+        token: UUID,
+        event: NotifyEvent | dict[str, Any] | Any | None = None,
+    ) -> NotifyResult:
+        """Resume a suspended saga and return a detailed notify outcome."""
+        normalized_event, idempotency_key = self._normalize_notify_event(event)
+
         async with self._session_maker() as session:
             async with session.begin():
                 saga = await self._repository.get_for_update(session, saga_id)
                 if saga.status != SagaStatus.SUSPENDED:
-                    return False
+                    self._append_notify_log(
+                        saga=saga,
+                        event=normalized_event,
+                        result=NotifyResult.NOT_SUSPENDED,
+                    )
+                    return NotifyResult.NOT_SUSPENDED
                 if saga.step_execution_token != token:
                     logger.info("Ignoring stale notify for saga_id=%s", saga_id)
-                    return False
-                if event is not None:
+                    self._append_notify_log(
+                        saga=saga,
+                        event=normalized_event,
+                        result=NotifyResult.STALE_TOKEN,
+                    )
+                    return NotifyResult.STALE_TOKEN
+
+                processed_ids = saga.context.setdefault("processed_event_ids", [])
+                if idempotency_key is not None and idempotency_key in processed_ids:
+                    self._append_notify_log(
+                        saga=saga,
+                        event=normalized_event,
+                        result=NotifyResult.DUPLICATE,
+                    )
+                    return NotifyResult.DUPLICATE
+
+                expected_type = saga.context.get("awaiting_event_type")
+                if (
+                    expected_type is not None
+                    and normalized_event is not None
+                    and normalized_event.event_type != expected_type
+                ):
+                    self._append_notify_log(
+                        saga=saga,
+                        event=normalized_event,
+                        result=NotifyResult.EVENT_TYPE_MISMATCH,
+                    )
+                    return NotifyResult.EVENT_TYPE_MISMATCH
+
+                expected_correlation = saga.context.get("awaiting_correlation_id")
+                if (
+                    expected_correlation is not None
+                    and normalized_event is not None
+                    and normalized_event.correlation_id != expected_correlation
+                ):
+                    self._append_notify_log(
+                        saga=saga,
+                        event=normalized_event,
+                        result=NotifyResult.CORRELATION_MISMATCH,
+                    )
+                    return NotifyResult.CORRELATION_MISMATCH
+
+                awaiting_until = self._parse_iso_datetime(
+                    saga.context.get("awaiting_until")
+                )
+                if awaiting_until is not None and datetime.now(UTC) > awaiting_until:
+                    self._append_notify_log(
+                        saga=saga,
+                        event=normalized_event,
+                        result=NotifyResult.EXPIRED,
+                    )
+                    return NotifyResult.EXPIRED
+
+                if normalized_event is not None:
                     events = saga.context.setdefault("events", [])
-                    events.append(self._serialize_value(event))
-                    saga.context["latest_event"] = self._serialize_value(event)
+                    events.append(self._serialize_value(normalized_event.payload))
+                    saga.context["latest_event"] = self._serialize_value(
+                        normalized_event.payload
+                    )
+                    saga.context["latest_event_meta"] = self._serialize_value(
+                        normalized_event.model_dump(mode="json")
+                    )
+                    if idempotency_key is not None:
+                        processed_ids.append(idempotency_key)
+
+                saga.context.pop("awaiting_event_type", None)
+                saga.context.pop("awaiting_correlation_id", None)
+                saga.context.pop("awaiting_until", None)
                 saga.status = SagaStatus.RUNNING
                 step_def = self._registry[saga.context["saga_name"]].steps[
                     saga.current_step_index
@@ -126,9 +230,50 @@ class SagaEngine(Generic[ModelT]):
                     now=datetime.now(UTC),
                 )
                 saga.step_execution_token = uuid.uuid4()
+                self._append_notify_log(
+                    saga=saga,
+                    event=normalized_event,
+                    result=NotifyResult.ACCEPTED,
+                )
 
         await self._drive(saga_id)
-        return True
+        return NotifyResult.ACCEPTED
+
+    async def await_event(
+        self,
+        *,
+        saga_id: UUID,
+        event: AwaitingEvent,
+    ) -> UUID:
+        """Configure a suspended saga to wait for a specific external event."""
+        async with self._session_maker() as session:
+            async with session.begin():
+                saga = await self._repository.get_for_update(session, saga_id)
+                if saga.status != SagaStatus.SUSPENDED:
+                    raise SagaStateError(
+                        "Cannot configure external wait unless saga is suspended "
+                        f"(status={saga.status.value})"
+                    )
+
+                if event.event_type is None:
+                    saga.context.pop("awaiting_event_type", None)
+                else:
+                    saga.context["awaiting_event_type"] = event.event_type
+
+                if event.correlation_id is None:
+                    saga.context.pop("awaiting_correlation_id", None)
+                else:
+                    saga.context["awaiting_correlation_id"] = event.correlation_id
+
+                if event.until is None:
+                    saga.context.pop("awaiting_until", None)
+                else:
+                    saga.context["awaiting_until"] = event.until.isoformat()
+
+                # External event waits should not be auto-resumed by run_due.
+                saga.deadline_at = None
+                saga.step_execution_token = uuid.uuid4()
+                return saga.step_execution_token
 
     async def run_due(self, *, limit: int = 100) -> int:
         """Resume due running, suspended, and compensating sagas."""
@@ -444,6 +589,39 @@ class SagaEngine(Generic[ModelT]):
                     return False
 
                 if error is None and step_output is not None:
+                    if step_def.outbox_map is not None:
+                        if (
+                            self._outbox_model_class is None
+                            or self._outbox_repository is None
+                        ):
+                            raise SagaStateError(
+                                "outbox_map is configured for step "
+                                f"'{step_def.step_id}', but outbox_model_class is not configured in SagaEngine"
+                            )
+                        outbox_events = (
+                            step_def.outbox_map(step_input, step_output) or []
+                        )
+                        now = datetime.now(UTC)
+                        outbox_messages = [
+                            self._outbox_model_class(
+                                saga_id=saga.id,
+                                aggregation_id=saga.aggregation_id,
+                                step_id=step_def.step_id,
+                                trace_id=saga.trace_id,
+                                topic=event.topic,
+                                message_key=event.key,
+                                payload=self._serialize_value(event.payload),
+                                headers=self._serialize_value(event.headers),
+                                status=OutboxStatus.PENDING,
+                                next_attempt_at=now,
+                            )
+                            for event in outbox_events
+                        ]
+                        if outbox_messages:
+                            await self._outbox_repository.create_many(
+                                session,
+                                outbox_messages,
+                            )
                     saga.step_history.append(
                         self._history_entry(
                             phase="execute",
@@ -696,6 +874,60 @@ class SagaEngine(Generic[ModelT]):
         if isinstance(value, list):
             return [self._serialize_value(item) for item in value]
         return value
+
+    def _normalize_notify_event(
+        self,
+        event: NotifyEvent | dict[str, Any] | Any | None,
+    ) -> tuple[NotifyEvent | None, str | None]:
+        if event is None:
+            return None, None
+        if isinstance(event, NotifyEvent):
+            return event, event.event_id
+        if isinstance(event, dict):
+            envelope_keys = {
+                "event_id",
+                "event_type",
+                "correlation_id",
+                "payload",
+                "source",
+                "occurred_at",
+            }
+            if any(key in event for key in envelope_keys):
+                notify_event = NotifyEvent.model_validate(event)
+                return notify_event, notify_event.event_id
+            return NotifyEvent(payload=self._serialize_value(event)), None
+        return NotifyEvent(payload=self._serialize_value(event)), None
+
+    @staticmethod
+    def _parse_iso_datetime(value: Any) -> datetime | None:
+        if not isinstance(value, str):
+            return None
+        normalized = value.replace("Z", "+00:00")
+        try:
+            parsed = datetime.fromisoformat(normalized)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=UTC)
+        return parsed
+
+    def _append_notify_log(
+        self,
+        *,
+        saga: ModelT,
+        event: NotifyEvent | None,
+        result: NotifyResult,
+    ) -> None:
+        inbox = saga.context.setdefault("notify_inbox", [])
+        inbox.append(
+            {
+                "timestamp": datetime.now(UTC).isoformat(),
+                "result": result.value,
+                "event_id": event.event_id if event is not None else None,
+                "event_type": event.event_type if event is not None else None,
+                "correlation_id": (event.correlation_id if event is not None else None),
+            }
+        )
 
     def _history_entry(
         self,

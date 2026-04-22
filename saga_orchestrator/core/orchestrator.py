@@ -8,7 +8,15 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ..domain.mixins import SagaStateMixin
-from ..domain.models import SagaDefinition, SagaSnapshot
+from ..domain.models import (
+    AwaitingEvent,
+    NotifyEvent,
+    NotifyResult,
+    SagaDefinition,
+    SagaSnapshot,
+)
+from ..outbox.models import OutboxMessageMixin
+from ..outbox.repository import OutboxRepository
 from .engine import SagaEngine
 from .repository import SagaRepository
 
@@ -23,12 +31,14 @@ class SagaOrchestrator(Generic[ModelT]):
         *,
         model_class: type[ModelT],
         session_maker: async_sessionmaker[AsyncSession],
+        outbox_model_class: type[OutboxMessageMixin] | None = None,
         execution_lease: timedelta = timedelta(minutes=5),
     ) -> None:
         """Initialize the orchestrator facade."""
         self._engine = SagaEngine(
             model_class=model_class,
             session_maker=session_maker,
+            outbox_model_class=outbox_model_class,
             execution_lease=execution_lease,
         )
 
@@ -41,6 +51,11 @@ class SagaOrchestrator(Generic[ModelT]):
     def repository(self) -> SagaRepository[ModelT]:
         """Return the repository used by the engine."""
         return self._engine.repository
+
+    @property
+    def outbox_repository(self) -> OutboxRepository[OutboxMessageMixin] | None:
+        """Return the outbox repository used by the engine."""
+        return self._engine.outbox_repository
 
     def register(self, name: str, saga_definition: SagaDefinition) -> None:
         """Register a saga definition under a runtime name."""
@@ -63,10 +78,37 @@ class SagaOrchestrator(Generic[ModelT]):
         )
 
     async def notify(
-        self, *, saga_id: UUID, token: UUID, event: Any | None = None
+        self,
+        *,
+        saga_id: UUID,
+        token: UUID,
+        event: NotifyEvent | dict[str, Any] | Any | None = None,
     ) -> bool:
         """Resume a suspended saga when the provided execution token matches."""
         return await self._engine.notify(saga_id=saga_id, token=token, event=event)
+
+    async def notify_detailed(
+        self,
+        *,
+        saga_id: UUID,
+        token: UUID,
+        event: NotifyEvent | dict[str, Any] | Any | None = None,
+    ) -> NotifyResult:
+        """Resume a suspended saga and return a detailed notify outcome."""
+        return await self._engine.notify_detailed(
+            saga_id=saga_id,
+            token=token,
+            event=event,
+        )
+
+    async def await_event(
+        self,
+        *,
+        saga_id: UUID,
+        event: AwaitingEvent,
+    ) -> UUID:
+        """Configure a suspended saga to wait for an external event."""
+        return await self._engine.await_event(saga_id=saga_id, event=event)
 
     async def run_due(self, *, limit: int = 100) -> int:
         """Resume due running, suspended, and compensating sagas."""
