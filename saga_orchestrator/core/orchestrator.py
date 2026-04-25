@@ -15,8 +15,11 @@ from ..domain.models import (
     SagaDefinition,
     SagaSnapshot,
 )
+from ..outbox.contracts import OutboxWriter
+from ..outbox.factory import OutboxMessageFactory
 from ..outbox.models import OutboxMessageMixin
 from ..outbox.repository import OutboxRepository
+from ..outbox.serialization import OutboxSerializer
 from .engine import SagaEngine
 from .repository import SagaRepository
 
@@ -32,6 +35,9 @@ class SagaOrchestrator(Generic[ModelT]):
         model_class: type[ModelT],
         session_maker: async_sessionmaker[AsyncSession],
         outbox_model_class: type[OutboxMessageMixin] | None = None,
+        outbox_writer: OutboxWriter | None = None,
+        outbox_serializer: OutboxSerializer | None = None,
+        outbox_message_factory: OutboxMessageFactory | None = None,
         execution_lease: timedelta = timedelta(minutes=5),
     ) -> None:
         """Initialize the orchestrator facade."""
@@ -39,6 +45,9 @@ class SagaOrchestrator(Generic[ModelT]):
             model_class=model_class,
             session_maker=session_maker,
             outbox_model_class=outbox_model_class,
+            outbox_writer=outbox_writer,
+            outbox_serializer=outbox_serializer,
+            outbox_message_factory=outbox_message_factory,
             execution_lease=execution_lease,
         )
 
@@ -56,6 +65,11 @@ class SagaOrchestrator(Generic[ModelT]):
     def outbox_repository(self) -> OutboxRepository[OutboxMessageMixin] | None:
         """Return the outbox repository used by the engine."""
         return self._engine.outbox_repository
+
+    @property
+    def outbox_writer(self) -> OutboxWriter | None:
+        """Return the outbox writer used by the engine."""
+        return self._engine.outbox_writer
 
     def register(self, name: str, saga_definition: SagaDefinition) -> None:
         """Register a saga definition under a runtime name."""

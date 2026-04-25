@@ -23,8 +23,11 @@ from ..domain.models import (
     StepDefinition,
 )
 from ..domain.models.enums import SagaStatus
-from ..outbox.models import OutboxMessageMixin, OutboxStatus
+from ..outbox.contracts import OutboxWriter
+from ..outbox.factory import DefaultOutboxMessageFactory, OutboxMessageFactory
+from ..outbox.models import OutboxMessageMixin
 from ..outbox.repository import OutboxRepository
+from ..outbox.serialization import JsonOutboxSerializer, OutboxSerializer
 from .repository import SagaRepository
 
 ModelT = TypeVar("ModelT", bound=SagaStateMixin)
@@ -39,6 +42,9 @@ class SagaEngine(Generic[ModelT]):
         model_class: type[ModelT],
         session_maker: async_sessionmaker[AsyncSession],
         outbox_model_class: type[OutboxMessageMixin] | None = None,
+        outbox_writer: OutboxWriter | None = None,
+        outbox_serializer: OutboxSerializer | None = None,
+        outbox_message_factory: OutboxMessageFactory | None = None,
         execution_lease: timedelta = timedelta(minutes=5),
     ) -> None:
         """Initialize the engine dependencies and execution lease."""
@@ -46,10 +52,20 @@ class SagaEngine(Generic[ModelT]):
         self._session_maker = session_maker
         self._execution_lease = execution_lease
         self._repository = SagaRepository(model_class)
-        self._outbox_model_class = outbox_model_class
         self._outbox_repository: OutboxRepository[OutboxMessageMixin] | None = None
-        if outbox_model_class is not None:
+        if outbox_writer is not None:
+            self._outbox_writer: OutboxWriter | None = outbox_writer
+        elif outbox_model_class is not None:
             self._outbox_repository = OutboxRepository(outbox_model_class)
+            self._outbox_writer = self._outbox_repository
+        else:
+            self._outbox_writer = None
+        self._outbox_serializer = outbox_serializer or JsonOutboxSerializer(
+            normalize=self._serialize_value
+        )
+        self._outbox_message_factory = (
+            outbox_message_factory or DefaultOutboxMessageFactory()
+        )
         self._registry: dict[str, SagaDefinition] = {}
 
     @property
@@ -61,6 +77,11 @@ class SagaEngine(Generic[ModelT]):
     def outbox_repository(self) -> OutboxRepository[OutboxMessageMixin] | None:
         """Return the outbox repository used by the engine."""
         return self._outbox_repository
+
+    @property
+    def outbox_writer(self) -> OutboxWriter | None:
+        """Return the outbox writer used by the engine."""
+        return self._outbox_writer
 
     def register(self, name: str, saga_definition: SagaDefinition) -> None:
         """Register a saga definition under a runtime name."""
@@ -590,38 +611,30 @@ class SagaEngine(Generic[ModelT]):
 
                 if error is None and step_output is not None:
                     if step_def.outbox_map is not None:
-                        if (
-                            self._outbox_model_class is None
-                            or self._outbox_repository is None
-                        ):
+                        if self._outbox_writer is None:
                             raise SagaStateError(
                                 "outbox_map is configured for step "
-                                f"'{step_def.step_id}', but outbox_model_class is not configured in SagaEngine"
+                                f"'{step_def.step_id}', but outbox writer is not configured in SagaEngine"
                             )
                         outbox_events = (
                             step_def.outbox_map(step_input, step_output) or []
                         )
-                        now = datetime.now(UTC)
-                        outbox_messages = [
-                            self._outbox_model_class(
-                                saga_id=saga.id,
-                                aggregation_id=saga.aggregation_id,
-                                step_id=step_def.step_id,
-                                trace_id=saga.trace_id,
-                                topic=event.topic,
-                                message_key=event.key,
-                                payload=self._serialize_value(event.payload),
-                                headers=self._serialize_value(event.headers),
-                                status=OutboxStatus.PENDING,
-                                next_attempt_at=now,
+                        if outbox_events:
+                            now = datetime.now(UTC)
+                            outbox_messages = (
+                                self._outbox_message_factory.build_messages(
+                                    saga_id=saga.id,
+                                    aggregation_id=saga.aggregation_id,
+                                    step_id=step_def.step_id,
+                                    trace_id=saga.trace_id,
+                                    step_input=step_input,
+                                    step_output=step_output,
+                                    events=outbox_events,
+                                    now=now,
+                                    serializer=self._outbox_serializer,
+                                )
                             )
-                            for event in outbox_events
-                        ]
-                        if outbox_messages:
-                            await self._outbox_repository.create_many(
-                                session,
-                                outbox_messages,
-                            )
+                            await self._outbox_writer.save(session, outbox_messages)
                     saga.step_history.append(
                         self._history_entry(
                             phase="execute",

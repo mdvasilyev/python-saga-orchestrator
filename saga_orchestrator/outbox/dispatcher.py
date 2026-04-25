@@ -1,26 +1,17 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import Any, Protocol, TypeVar
-from uuid import UUID
+from typing import TypeVar
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from .models import OutboxMessageMixin, OutboxStatus
+from .contracts import OutboxPublisher, OutboxWriter
+from .models import OutboxMessageMixin
 from .repository import OutboxRepository
+from .retry import FixedOutboxDispatchRetry, OutboxDispatchRetryPolicy
+from .serialization import JsonOutboxSerializer, OutboxSerializer
 
 OutboxModelT = TypeVar("OutboxModelT", bound=OutboxMessageMixin)
-
-
-class OutboxPublisher(Protocol):
-    async def publish(
-        self,
-        *,
-        topic: str,
-        payload: dict[str, Any],
-        key: str | None = None,
-        headers: dict[str, Any] | None = None,
-    ) -> None: ...
 
 
 class OutboxDispatcher:
@@ -30,66 +21,64 @@ class OutboxDispatcher:
         self,
         *,
         session_maker: async_sessionmaker[AsyncSession],
-        model_class: type[OutboxModelT],
         publisher: OutboxPublisher,
+        writer: OutboxWriter | None = None,
+        model_class: type[OutboxModelT] | None = None,
+        serializer: OutboxSerializer | None = None,
+        retry_policy: OutboxDispatchRetryPolicy | None = None,
         failure_backoff: timedelta = timedelta(seconds=30),
     ) -> None:
         self._session_maker = session_maker
-        self._repository = OutboxRepository(model_class)
         self._publisher = publisher
-        self._failure_backoff = failure_backoff
+        if writer is None:
+            if model_class is None:
+                raise ValueError("Either writer or model_class must be provided")
+            self._writer: OutboxWriter = OutboxRepository(model_class)
+        else:
+            self._writer = writer
+        self._serializer = serializer or JsonOutboxSerializer()
+        self._retry_policy = retry_policy or FixedOutboxDispatchRetry(
+            delay=failure_backoff
+        )
 
     async def run_once(self, *, limit: int = 100) -> int:
         """Claim due outbox messages and attempt to publish them once."""
         now = datetime.now(UTC)
-        claimed: list[tuple[UUID, str, dict[str, Any], str | None, dict[str, Any]]] = []
 
         async with self._session_maker() as session:
             async with session.begin():
-                due = await self._repository.due_for_dispatch(
+                claimed = await self._writer.claim_due(
                     session,
                     now=now,
                     limit=limit,
                 )
-                for message in due:
-                    message.status = OutboxStatus.DISPATCHING
-                    claimed.append(
-                        (
-                            message.id,
-                            message.topic,
-                            message.payload,
-                            message.message_key,
-                            message.headers,
-                        )
-                    )
 
-        for message_id, topic, payload, key, headers in claimed:
+        for message in claimed:
             try:
                 await self._publisher.publish(
-                    topic=topic,
-                    payload=payload,
-                    key=key,
-                    headers=headers,
+                    topic=message.topic,
+                    payload=self._serializer.deserialize_payload(message.payload),
+                    key=message.key,
+                    headers=self._serializer.deserialize_headers(message.headers),
                 )
             except Exception as exc:  # noqa: BLE001
+                delay = self._retry_policy.next_delay(message.attempts + 1, exc)
                 async with self._session_maker() as session:
                     async with session.begin():
-                        row = await self._repository.get_for_update(session, message_id)
-                        if row is None or row.status != OutboxStatus.DISPATCHING:
-                            continue
-                        row.status = OutboxStatus.FAILED
-                        row.attempts += 1
-                        row.last_error = repr(exc)
-                        row.next_attempt_at = datetime.now(UTC) + self._failure_backoff
+                        await self._writer.mark_failed(
+                            session,
+                            message.id,
+                            error=repr(exc),
+                            next_attempt_at=datetime.now(UTC) + delay,
+                        )
                 continue
 
             async with self._session_maker() as session:
                 async with session.begin():
-                    row = await self._repository.get_for_update(session, message_id)
-                    if row is None or row.status != OutboxStatus.DISPATCHING:
-                        continue
-                    row.status = OutboxStatus.SENT
-                    row.sent_at = datetime.now(UTC)
-                    row.last_error = None
+                    await self._writer.mark_sent(
+                        session,
+                        message.id,
+                        sent_at=datetime.now(UTC),
+                    )
 
         return len(claimed)
