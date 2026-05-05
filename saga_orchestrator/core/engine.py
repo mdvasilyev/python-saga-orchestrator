@@ -10,7 +10,7 @@ from loguru import logger
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from ..domain.exceptions import SagaDefinitionError, SagaStateError
+from ..domain.exceptions import SagaDefinitionError, SagaNotFoundError, SagaStateError
 from ..domain.mixins import SagaStateMixin
 from ..domain.models import (
     AwaitingEvent,
@@ -20,10 +20,15 @@ from ..domain.models import (
     SagaAdminSnapshot,
     SagaDefinition,
     SagaSnapshot,
+    StepAwaitEvent,
     StepDefinition,
 )
 from ..domain.models.enums import SagaStatus
-from ..outbox.contracts import OutboxWriter
+from ..inbox.contracts import ClaimedInboxMessage, InboxWriteMessage, InboxWriter
+from ..inbox.dispatcher import InboxDispatcher, InboxProcessOutcome, InboxProcessStatus
+from ..inbox.models import InboxMessageMixin
+from ..inbox.repository import InboxRepository
+from ..outbox.contracts import OutboxWriteMessage, OutboxWriter
 from ..outbox.factory import DefaultOutboxMessageFactory, OutboxMessageFactory
 from ..outbox.models import OutboxMessageMixin
 from ..outbox.repository import OutboxRepository
@@ -41,6 +46,8 @@ class SagaEngine(Generic[ModelT]):
         *,
         model_class: type[ModelT],
         session_maker: async_sessionmaker[AsyncSession],
+        inbox_model_class: type[InboxMessageMixin] | None = None,
+        inbox_writer: InboxWriter | None = None,
         outbox_model_class: type[OutboxMessageMixin] | None = None,
         outbox_writer: OutboxWriter | None = None,
         outbox_serializer: OutboxSerializer | None = None,
@@ -52,6 +59,21 @@ class SagaEngine(Generic[ModelT]):
         self._session_maker = session_maker
         self._execution_lease = execution_lease
         self._repository = SagaRepository(model_class)
+        self._inbox_repository: InboxRepository[InboxMessageMixin] | None = None
+        if inbox_writer is not None:
+            self._inbox_writer: InboxWriter | None = inbox_writer
+        elif inbox_model_class is not None:
+            self._inbox_repository = InboxRepository(inbox_model_class)
+            self._inbox_writer = self._inbox_repository
+        else:
+            self._inbox_writer = None
+        self._inbox_dispatcher: InboxDispatcher | None = None
+        if self._inbox_writer is not None:
+            self._inbox_dispatcher = InboxDispatcher(
+                session_maker=session_maker,
+                writer=self._inbox_writer,
+                processor=self,
+            )
         self._outbox_repository: OutboxRepository[OutboxMessageMixin] | None = None
         if outbox_writer is not None:
             self._outbox_writer: OutboxWriter | None = outbox_writer
@@ -72,6 +94,16 @@ class SagaEngine(Generic[ModelT]):
     def repository(self) -> SagaRepository[ModelT]:
         """Return the repository used by the engine."""
         return self._repository
+
+    @property
+    def inbox_repository(self) -> InboxRepository[InboxMessageMixin] | None:
+        """Return the inbox repository used by the engine."""
+        return self._inbox_repository
+
+    @property
+    def inbox_writer(self) -> InboxWriter | None:
+        """Return the inbox writer used by the engine."""
+        return self._inbox_writer
 
     @property
     def outbox_repository(self) -> OutboxRepository[OutboxMessageMixin] | None:
@@ -190,7 +222,30 @@ class SagaEngine(Generic[ModelT]):
                     )
                     return NotifyResult.DUPLICATE
 
+                expected_types = saga.context.get("awaiting_event_types")
                 expected_type = saga.context.get("awaiting_event_type")
+                if normalized_event is None and (
+                    expected_type is not None
+                    or (isinstance(expected_types, list) and len(expected_types) > 0)
+                ):
+                    self._append_notify_log(
+                        saga=saga,
+                        event=normalized_event,
+                        result=NotifyResult.EVENT_TYPE_MISMATCH,
+                    )
+                    return NotifyResult.EVENT_TYPE_MISMATCH
+                if (
+                    normalized_event is not None
+                    and isinstance(expected_types, list)
+                    and expected_types
+                    and normalized_event.event_type not in expected_types
+                ):
+                    self._append_notify_log(
+                        saga=saga,
+                        event=normalized_event,
+                        result=NotifyResult.EVENT_TYPE_MISMATCH,
+                    )
+                    return NotifyResult.EVENT_TYPE_MISMATCH
                 if (
                     expected_type is not None
                     and normalized_event is not None
@@ -240,6 +295,7 @@ class SagaEngine(Generic[ModelT]):
                         processed_ids.append(idempotency_key)
 
                 saga.context.pop("awaiting_event_type", None)
+                saga.context.pop("awaiting_event_types", None)
                 saga.context.pop("awaiting_correlation_id", None)
                 saga.context.pop("awaiting_until", None)
                 saga.status = SagaStatus.RUNNING
@@ -259,6 +315,48 @@ class SagaEngine(Generic[ModelT]):
 
         await self._drive(saga_id)
         return NotifyResult.ACCEPTED
+
+    async def ingest_event(
+        self,
+        *,
+        event: NotifyEvent | dict[str, Any] | Any,
+        saga_id: UUID | None = None,
+        aggregation_id: str | None = None,
+    ) -> bool:
+        """Persist one inbound event into inbox storage for asynchronous processing."""
+        if self._inbox_writer is None:
+            raise SagaStateError("Inbox writer is not configured in SagaEngine")
+
+        normalized_event, idempotency_key = self._normalize_notify_event(event)
+        if normalized_event is None:
+            raise SagaStateError("Inbox ingestion requires a non-empty event payload")
+        if idempotency_key is None:
+            raise SagaStateError("Inbox ingestion requires event.event_id")
+        if saga_id is None and aggregation_id is None:
+            raise SagaStateError(
+                "Inbox ingestion requires saga_id or aggregation_id for routing"
+            )
+
+        message = InboxWriteMessage(
+            event_id=idempotency_key,
+            saga_id=saga_id,
+            aggregation_id=aggregation_id,
+            event_type=normalized_event.event_type,
+            correlation_id=normalized_event.correlation_id,
+            payload=self._serialize_value(normalized_event.payload),
+            source=normalized_event.source,
+            occurred_at=normalized_event.occurred_at,
+        )
+
+        async with self._session_maker() as session:
+            async with session.begin():
+                return await self._inbox_writer.save(session, message)
+
+    async def run_inbox_due(self, *, limit: int = 100) -> int:
+        """Process due inbox events through the configured inbox dispatcher."""
+        if self._inbox_dispatcher is None:
+            return 0
+        return await self._inbox_dispatcher.run_once(limit=limit)
 
     async def await_event(
         self,
@@ -280,6 +378,12 @@ class SagaEngine(Generic[ModelT]):
                     saga.context.pop("awaiting_event_type", None)
                 else:
                     saga.context["awaiting_event_type"] = event.event_type
+                if event.event_types is None:
+                    saga.context.pop("awaiting_event_types", None)
+                else:
+                    saga.context["awaiting_event_types"] = list(event.event_types)
+                    if event.event_type is None:
+                        saga.context["awaiting_event_type"] = event.event_types[0]
 
                 if event.correlation_id is None:
                     saga.context.pop("awaiting_correlation_id", None)
@@ -522,16 +626,21 @@ class SagaEngine(Generic[ModelT]):
 
             success = False
             step_output: BaseModel | None = None
+            wait_spec: StepAwaitEvent | None = None
             error: Exception | None = None
 
             try:
                 if step_def.timeout is None:
-                    step_output = await step_def.step.execute(step_input)
+                    step_result = await step_def.step.execute(step_input)
                 else:
-                    step_output = await asyncio.wait_for(
+                    step_result = await asyncio.wait_for(
                         step_def.step.execute(step_input),
                         timeout=step_def.timeout.total_seconds(),
                     )
+                if isinstance(step_result, StepAwaitEvent):
+                    wait_spec = step_result
+                else:
+                    step_output = step_result
                 success = True
             except Exception as exc:  # noqa: BLE001
                 error = exc
@@ -542,6 +651,7 @@ class SagaEngine(Generic[ModelT]):
                 token=step_token,
                 step_input=step_input,
                 step_output=step_output,
+                wait_spec=wait_spec,
                 error=error,
                 attempt_number=attempt_number,
             )
@@ -595,6 +705,7 @@ class SagaEngine(Generic[ModelT]):
         token: UUID,
         step_input: BaseModel,
         step_output: BaseModel | None,
+        wait_spec: StepAwaitEvent | None,
         error: Exception | None,
         attempt_number: int,
     ) -> bool:
@@ -607,6 +718,75 @@ class SagaEngine(Generic[ModelT]):
                     or saga.status != SagaStatus.RUNNING
                 ):
                     logger.info("Stale step result ignored for saga_id=%s", saga_id)
+                    return False
+
+                if error is None and wait_spec is not None:
+                    if wait_spec.outbox_events:
+                        if self._outbox_writer is None:
+                            raise SagaStateError(
+                                "Step returned StepAwaitEvent with outbox_events, "
+                                "but outbox writer is not configured in SagaEngine"
+                            )
+                        now = datetime.now(UTC)
+                        await_messages = [
+                            OutboxWriteMessage(
+                                saga_id=saga.id,
+                                aggregation_id=saga.aggregation_id,
+                                step_id=step_def.step_id,
+                                trace_id=saga.trace_id,
+                                topic=event.topic,
+                                key=event.key,
+                                payload=self._outbox_serializer.serialize_payload(
+                                    event.payload
+                                ),
+                                headers=self._outbox_serializer.serialize_headers(
+                                    event.headers
+                                ),
+                                next_attempt_at=now,
+                            )
+                            for event in wait_spec.outbox_events
+                        ]
+                        await self._outbox_writer.save(session, await_messages)
+
+                    saga.step_history.append(
+                        self._history_entry(
+                            phase="execute",
+                            status="WAITING",
+                            step_def=step_def,
+                            token=token,
+                            attempt=attempt_number,
+                            step_input=step_input,
+                            step_output=None,
+                            error=None,
+                        )
+                    )
+                    if wait_spec.event_types is None:
+                        saga.context.pop("awaiting_event_types", None)
+                        saga.context.pop("awaiting_event_type", None)
+                    else:
+                        saga.context["awaiting_event_types"] = list(
+                            wait_spec.event_types
+                        )
+                        saga.context["awaiting_event_type"] = wait_spec.event_types[0]
+                    if wait_spec.correlation_id is None:
+                        saga.context.pop("awaiting_correlation_id", None)
+                    else:
+                        saga.context["awaiting_correlation_id"] = (
+                            wait_spec.correlation_id
+                        )
+                    if wait_spec.until is None:
+                        saga.context.pop("awaiting_until", None)
+                        saga.deadline_at = None
+                    else:
+                        until = datetime.now(UTC) + wait_spec.until
+                        saga.context["awaiting_until"] = until.isoformat()
+                        saga.deadline_at = until
+
+                    saga.status = SagaStatus.SUSPENDED
+                    saga.last_error = None
+                    saga.context.pop("latest_event", None)
+                    saga.context.pop("latest_event_meta", None)
+                    saga.step_execution_token = uuid.uuid4()
                     return False
 
                 if error is None and step_output is not None:
@@ -650,6 +830,7 @@ class SagaEngine(Generic[ModelT]):
                     outputs = saga.context.setdefault("step_outputs", {})
                     outputs[step_def.step_id] = self._serialize_value(step_output)
                     saga.context.pop("latest_event", None)
+                    saga.context.pop("latest_event_meta", None)
                     saga.current_step_index += 1
                     saga.retry_counter = 0
                     saga.deadline_at = None
@@ -841,6 +1022,84 @@ class SagaEngine(Generic[ModelT]):
                     return False
                 saga.deadline_at = datetime.now(UTC) + self._execution_lease
                 return True
+
+    async def process(self, message: ClaimedInboxMessage) -> InboxProcessOutcome:
+        """Process one claimed inbox message and map outcome to dispatcher semantics."""
+        saga_id = message.saga_id
+        token: UUID | None = None
+
+        if saga_id is not None:
+            async with self._session_maker() as session:
+                async with session.begin():
+                    try:
+                        saga = await self._repository.get_for_update(session, saga_id)
+                    except SagaNotFoundError:
+                        return InboxProcessOutcome(
+                            status=InboxProcessStatus.IGNORED,
+                            reason="Saga not found",
+                        )
+                    token = saga.step_execution_token
+        elif message.aggregation_id is not None:
+            async with self._session_maker() as session:
+                async with session.begin():
+                    saga = (
+                        await self._repository.get_active_by_aggregation_id_for_update(
+                            session,
+                            message.aggregation_id,
+                        )
+                    )
+                    if saga is None:
+                        return InboxProcessOutcome(
+                            status=InboxProcessStatus.RETRY,
+                            reason="Active saga for aggregation_id not found",
+                        )
+                    saga_id = saga.id
+                    token = saga.step_execution_token
+        else:
+            return InboxProcessOutcome(
+                status=InboxProcessStatus.IGNORED,
+                reason="Inbox message has no saga_id or aggregation_id",
+            )
+
+        if saga_id is None or token is None:
+            return InboxProcessOutcome(
+                status=InboxProcessStatus.RETRY,
+                reason="Saga execution token is not available yet",
+            )
+
+        notify_result = await self.notify_detailed(
+            saga_id=saga_id,
+            token=token,
+            event=NotifyEvent(
+                event_id=message.event_id,
+                event_type=message.event_type,
+                correlation_id=message.correlation_id,
+                payload=message.payload,
+                source=message.source,
+                occurred_at=message.occurred_at,
+            ),
+        )
+        if notify_result in {NotifyResult.ACCEPTED, NotifyResult.DUPLICATE}:
+            return InboxProcessOutcome(status=InboxProcessStatus.APPLIED)
+        if notify_result == NotifyResult.NOT_SUSPENDED:
+            return InboxProcessOutcome(
+                status=InboxProcessStatus.IGNORED,
+                reason=notify_result.value,
+            )
+        if notify_result in {
+            NotifyResult.STALE_TOKEN,
+            NotifyResult.EVENT_TYPE_MISMATCH,
+            NotifyResult.CORRELATION_MISMATCH,
+            NotifyResult.EXPIRED,
+        }:
+            return InboxProcessOutcome(
+                status=InboxProcessStatus.IGNORED,
+                reason=notify_result.value,
+            )
+        return InboxProcessOutcome(
+            status=InboxProcessStatus.IGNORED,
+            reason=notify_result.value,
+        )
 
     @staticmethod
     def _build_step_input(

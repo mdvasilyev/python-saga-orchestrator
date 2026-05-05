@@ -4,7 +4,15 @@ import inspect
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Any, Generic, TypeAlias, TypeVar, get_type_hints
+from typing import (
+    Any,
+    Generic,
+    TypeAlias,
+    TypeVar,
+    get_args,
+    get_origin,
+    get_type_hints,
+)
 
 from pydantic import BaseModel
 
@@ -15,6 +23,18 @@ from .retry import RetryPolicy
 InputModelT = TypeVar("InputModelT", bound=BaseModel)
 OutputModelT = TypeVar("OutputModelT", bound=BaseModel)
 DepModelT = TypeVar("DepModelT", bound=BaseModel)
+
+
+@dataclass(frozen=True)
+class StepAwaitEvent:
+    event_types: tuple[str, ...] | None = None
+    correlation_id: str | None = None
+    until: timedelta | None = None
+    outbox_events: tuple[OutboxEvent, ...] | None = None
+
+    def __post_init__(self) -> None:
+        if self.event_types is not None and len(self.event_types) == 0:
+            raise TypeValidationError("StepAwaitEvent.event_types cannot be empty")
 
 
 @dataclass(frozen=True)
@@ -71,19 +91,34 @@ class BaseStep(Generic[InputModelT, OutputModelT]):
                 f"Step '{cls.__name__}' must type annotate execute(inp) and return type"
             )
         input_model = hints["inp"]
-        output_model = hints["return"]
+        output_model = cls._resolve_output_model(hints["return"])
         if not (inspect.isclass(input_model) and issubclass(input_model, BaseModel)):
             raise TypeValidationError(
                 f"Step '{cls.__name__}' input must inherit from pydantic BaseModel"
             )
-        if not (inspect.isclass(output_model) and issubclass(output_model, BaseModel)):
-            raise TypeValidationError(
-                f"Step '{cls.__name__}' output must inherit from pydantic BaseModel"
-            )
         cls.input_model = input_model
         cls.output_model = output_model
 
-    async def execute(self, inp: InputModelT) -> OutputModelT:
+    @staticmethod
+    def _resolve_output_model(annotation: Any) -> type[BaseModel]:
+        if inspect.isclass(annotation) and issubclass(annotation, BaseModel):
+            return annotation
+
+        origin = get_origin(annotation)
+        if origin is None:
+            raise TypeValidationError("Step execute return type must include BaseModel")
+        args = tuple(arg for arg in get_args(annotation) if arg is not type(None))
+        model_candidates = [
+            arg for arg in args if inspect.isclass(arg) and issubclass(arg, BaseModel)
+        ]
+        await_candidates = [arg for arg in args if arg is StepAwaitEvent]
+        if len(model_candidates) == 1 and len(await_candidates) <= 1:
+            return model_candidates[0]
+        raise TypeValidationError(
+            "Step execute return type must be BaseModel or BaseModel | StepAwaitEvent"
+        )
+
+    async def execute(self, inp: InputModelT) -> OutputModelT | StepAwaitEvent:
         raise NotImplementedError
 
     async def compensate(self, inp: InputModelT, out: OutputModelT) -> None:

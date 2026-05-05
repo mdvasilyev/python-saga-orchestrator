@@ -17,6 +17,7 @@ Unlike external workflow platforms, this library runs inside your service and st
 - persisted saga state through `SagaStateMixin`
 - runtime execution through `SagaOrchestrator` and `SagaEngine`
 - retry, timeout, recovery, and compensation
+- async queue-style steps through `StepAwaitEvent` and `notify(...)`
 - administrative operations through `SagaAdmin`
 - PostgreSQL-first reliability using `SELECT ... FOR UPDATE`
 
@@ -243,6 +244,23 @@ token = await orchestrator.await_event(
 
 The event payload is stored in saga context and can be used by root-step `input_map` functions through `InputContext`.
 
+For distributed consumers, use transactional inbox ingestion first, then process inbox rows:
+
+```python
+stored = await orchestrator.ingest_event(
+    aggregation_id="order-123",
+    event={
+        "event_id": "evt-123",
+        "event_type": "payment.completed",
+        "correlation_id": "corr-123",
+        "payload": {"payment_id": "pay-1"},
+    },
+)
+
+if stored:
+    await orchestrator.run_inbox_due(limit=100)
+```
+
 ## Administrative operations
 
 Get the full persisted state:
@@ -300,6 +318,7 @@ A runnable end-to-end example is available in:
 - [`examples/retry_recovery.py`](./examples/retry_recovery.py)
 - [`examples/compensation_flow.py`](./examples/compensation_flow.py)
 - [`examples/admin_skip.py`](./examples/admin_skip.py)
+- [`examples/http_and_queue.py`](./examples/http_and_queue.py)
 
 These examples demonstrate:
 - basic model deployment

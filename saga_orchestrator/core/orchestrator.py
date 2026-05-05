@@ -15,6 +15,9 @@ from ..domain.models import (
     SagaDefinition,
     SagaSnapshot,
 )
+from ..inbox.contracts import InboxWriter
+from ..inbox.models import InboxMessageMixin
+from ..inbox.repository import InboxRepository
 from ..outbox.contracts import OutboxWriter
 from ..outbox.factory import OutboxMessageFactory
 from ..outbox.models import OutboxMessageMixin
@@ -34,6 +37,8 @@ class SagaOrchestrator(Generic[ModelT]):
         *,
         model_class: type[ModelT],
         session_maker: async_sessionmaker[AsyncSession],
+        inbox_model_class: type[InboxMessageMixin] | None = None,
+        inbox_writer: InboxWriter | None = None,
         outbox_model_class: type[OutboxMessageMixin] | None = None,
         outbox_writer: OutboxWriter | None = None,
         outbox_serializer: OutboxSerializer | None = None,
@@ -44,6 +49,8 @@ class SagaOrchestrator(Generic[ModelT]):
         self._engine = SagaEngine(
             model_class=model_class,
             session_maker=session_maker,
+            inbox_model_class=inbox_model_class,
+            inbox_writer=inbox_writer,
             outbox_model_class=outbox_model_class,
             outbox_writer=outbox_writer,
             outbox_serializer=outbox_serializer,
@@ -65,6 +72,16 @@ class SagaOrchestrator(Generic[ModelT]):
     def outbox_repository(self) -> OutboxRepository[OutboxMessageMixin] | None:
         """Return the outbox repository used by the engine."""
         return self._engine.outbox_repository
+
+    @property
+    def inbox_repository(self) -> InboxRepository[InboxMessageMixin] | None:
+        """Return the inbox repository used by the engine."""
+        return self._engine.inbox_repository
+
+    @property
+    def inbox_writer(self) -> InboxWriter | None:
+        """Return the inbox writer used by the engine."""
+        return self._engine.inbox_writer
 
     @property
     def outbox_writer(self) -> OutboxWriter | None:
@@ -101,6 +118,20 @@ class SagaOrchestrator(Generic[ModelT]):
         """Resume a suspended saga when the provided execution token matches."""
         return await self._engine.notify(saga_id=saga_id, token=token, event=event)
 
+    async def ingest_event(
+        self,
+        *,
+        event: NotifyEvent | dict[str, Any] | Any,
+        saga_id: UUID | None = None,
+        aggregation_id: str | None = None,
+    ) -> bool:
+        """Persist one inbound event into inbox storage for asynchronous processing."""
+        return await self._engine.ingest_event(
+            event=event,
+            saga_id=saga_id,
+            aggregation_id=aggregation_id,
+        )
+
     async def notify_detailed(
         self,
         *,
@@ -127,6 +158,10 @@ class SagaOrchestrator(Generic[ModelT]):
     async def run_due(self, *, limit: int = 100) -> int:
         """Resume due running, suspended, and compensating sagas."""
         return await self._engine.run_due(limit=limit)
+
+    async def run_inbox_due(self, *, limit: int = 100) -> int:
+        """Process due inbox events through the configured inbox dispatcher."""
+        return await self._engine.run_inbox_due(limit=limit)
 
     async def get_snapshot(self, saga_id: UUID) -> SagaSnapshot:
         """Return the snapshot view of one saga."""

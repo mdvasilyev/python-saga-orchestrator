@@ -3,7 +3,7 @@ from pydantic import BaseModel
 
 from saga_orchestrator.core import SagaBuilder
 from saga_orchestrator.domain.exceptions import SagaDefinitionError, TypeValidationError
-from saga_orchestrator.domain.models import BaseStep, InputContext
+from saga_orchestrator.domain.models import BaseStep, InputContext, StepAwaitEvent
 
 
 class InOne(BaseModel):
@@ -30,6 +30,16 @@ class StepOne(BaseStep[InOne, OutOne]):
 class StepTwo(BaseStep[InTwo, OutTwo]):
     async def execute(self, inp: InTwo) -> OutTwo:
         return OutTwo(value=inp.value + 1)
+
+
+class WaitingStep(BaseStep[InTwo, OutTwo]):
+    async def execute(self, inp: InTwo) -> OutTwo | StepAwaitEvent:
+        return StepAwaitEvent(event_types=("ok",))
+
+
+def test_step_allows_waiting_union_return_type() -> None:
+    step = WaitingStep()
+    assert step.output_model is OutTwo
 
 
 def test_builder_rejects_empty_saga() -> None:

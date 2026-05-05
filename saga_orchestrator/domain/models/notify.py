@@ -28,5 +28,6 @@ class NotifyEvent(BaseModel):
 
 class AwaitingEvent(BaseModel):
     event_type: str | None = None
+    event_types: tuple[str, ...] | None = None
     correlation_id: str | None = None
     until: datetime | None = None

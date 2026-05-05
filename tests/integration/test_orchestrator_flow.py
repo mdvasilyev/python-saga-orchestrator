@@ -15,7 +15,7 @@ from saga_orchestrator.domain.exceptions import (
     ActiveSagaAlreadyExistsError,
     SagaStateError,
 )
-from saga_orchestrator.domain.models import BaseStep, ExponentialRetry
+from saga_orchestrator.domain.models import BaseStep, ExponentialRetry, StepAwaitEvent
 from saga_orchestrator.domain.models.enums import SagaStatus
 from saga_orchestrator.domain.models.notify import (
     AwaitingEvent,
@@ -23,7 +23,11 @@ from saga_orchestrator.domain.models.notify import (
     NotifyResult,
 )
 from saga_orchestrator.outbox import OutboxDispatcher, OutboxEvent, OutboxStatus
-from tests.integration.models import IntegrationOutboxMessage, IntegrationSagaState
+from tests.integration.models import (
+    IntegrationInboxMessage,
+    IntegrationOutboxMessage,
+    IntegrationSagaState,
+)
 
 
 class StartInput(BaseModel):
@@ -44,6 +48,47 @@ class NextOutput(BaseModel):
 
 class LongOutput(BaseModel):
     endpoint: str
+
+
+class HttpInput(BaseModel):
+    order_id: str
+
+
+class HttpOutput(BaseModel):
+    order_id: str
+    gateway_url: str
+
+
+class ReserveQueueInput(BaseModel):
+    order_id: str
+    gateway_url: str
+    correlation_id: str
+    event_type: str | None = None
+    event_payload: dict | None = None
+
+
+class ReserveQueueOutput(BaseModel):
+    reservation_id: str
+
+
+class ActivateQueueInput(BaseModel):
+    reservation_id: str
+    correlation_id: str
+    event_type: str | None = None
+    event_payload: dict | None = None
+
+
+class ActivateQueueOutput(BaseModel):
+    deployment_id: str
+
+
+class InboxWaitInput(BaseModel):
+    value: int
+    event_type: str | None = None
+
+
+class InboxWaitOutput(BaseModel):
+    value: int
 
 
 class AddOneStep(BaseStep[StartInput, StartOutput]):
@@ -75,6 +120,81 @@ class FailsOnceStep(BaseStep[StartInput, StartOutput]):
         if self.calls == 1:
             raise RuntimeError("temporary")
         return StartOutput(value=inp.value + 1)
+
+
+class HttpStep(BaseStep[HttpInput, HttpOutput]):
+    async def execute(self, inp: HttpInput) -> HttpOutput:
+        return HttpOutput(
+            order_id=inp.order_id,
+            gateway_url=f"https://gw/{inp.order_id}",
+        )
+
+
+class ReserveQueueStep(BaseStep[ReserveQueueInput, ReserveQueueOutput]):
+    async def execute(
+        self,
+        inp: ReserveQueueInput,
+    ) -> ReserveQueueOutput | StepAwaitEvent:
+        if inp.event_type is None:
+            return StepAwaitEvent(
+                event_types=("reserve.success", "reserve.failed"),
+                correlation_id=inp.correlation_id,
+                outbox_events=(
+                    OutboxEvent(
+                        topic="reserve.command",
+                        key=inp.order_id,
+                        headers={"correlation_id": inp.correlation_id},
+                        payload={
+                            "order_id": inp.order_id,
+                            "gateway_url": inp.gateway_url,
+                        },
+                    ),
+                ),
+            )
+        if inp.event_type == "reserve.failed":
+            raise RuntimeError("reserve failed")
+        if inp.event_type != "reserve.success":
+            raise RuntimeError("unexpected reserve event")
+        payload = inp.event_payload or {}
+        return ReserveQueueOutput(reservation_id=payload["reservation_id"])
+
+
+class ActivateQueueStep(BaseStep[ActivateQueueInput, ActivateQueueOutput]):
+    async def execute(
+        self,
+        inp: ActivateQueueInput,
+    ) -> ActivateQueueOutput | StepAwaitEvent:
+        if inp.event_type is None:
+            return StepAwaitEvent(
+                event_types=("activate.success", "activate.failed"),
+                correlation_id=inp.correlation_id,
+                outbox_events=(
+                    OutboxEvent(
+                        topic="activate.command",
+                        key=inp.reservation_id,
+                        headers={"correlation_id": inp.correlation_id},
+                        payload={"reservation_id": inp.reservation_id},
+                    ),
+                ),
+            )
+        if inp.event_type == "activate.failed":
+            raise RuntimeError("activate failed")
+        if inp.event_type != "activate.success":
+            raise RuntimeError("unexpected activate event")
+        payload = inp.event_payload or {}
+        return ActivateQueueOutput(deployment_id=payload["deployment_id"])
+
+
+class InboxWaitStep(BaseStep[InboxWaitInput, InboxWaitOutput]):
+    async def execute(self, inp: InboxWaitInput) -> InboxWaitOutput | StepAwaitEvent:
+        if inp.event_type is None:
+            return StepAwaitEvent(
+                event_types=("inbox.success", "inbox.failed"),
+                correlation_id=f"inbox-{inp.value}",
+            )
+        if inp.event_type == "inbox.failed":
+            raise RuntimeError("inbox failed")
+        return InboxWaitOutput(value=inp.value + 1)
 
 
 @pytest.mark.asyncio
@@ -600,6 +720,62 @@ async def test_notify_detailed_rejects_expired_waiting_window(session_maker):
 
 
 @pytest.mark.asyncio
+async def test_inbox_ingest_and_run_due_applies_event(session_maker):
+    builder = SagaBuilder()
+    builder.add_step(
+        step=InboxWaitStep(),
+        input_map=lambda ctx: InboxWaitInput(
+            value=ctx.initial_data["value"],
+            event_type=(ctx.context.get("latest_event_meta") or {}).get("event_type"),
+        ),
+    )
+
+    orchestrator = SagaOrchestrator[IntegrationSagaState](
+        model_class=IntegrationSagaState,
+        inbox_model_class=IntegrationInboxMessage,
+        session_maker=session_maker,
+    )
+    admin = SagaAdmin[IntegrationSagaState](engine=orchestrator.engine)
+    orchestrator.register("inbox-flow", builder.build())
+
+    saga_id = await orchestrator.start(
+        saga_name="inbox-flow",
+        initial_data={"value": 41},
+        aggregation_id="agg-inbox-flow",
+    )
+    state = await admin.get_saga(saga_id)
+    assert state.status == SagaStatus.SUSPENDED
+
+    first = await orchestrator.ingest_event(
+        aggregation_id="agg-inbox-flow",
+        event=NotifyEvent(
+            event_id="evt-inbox-1",
+            event_type="inbox.success",
+            correlation_id="inbox-41",
+            payload={"ok": True},
+        ),
+    )
+    duplicate = await orchestrator.ingest_event(
+        aggregation_id="agg-inbox-flow",
+        event=NotifyEvent(
+            event_id="evt-inbox-1",
+            event_type="inbox.success",
+            correlation_id="inbox-41",
+            payload={"ok": True},
+        ),
+    )
+    assert first is True
+    assert duplicate is False
+
+    processed = await orchestrator.run_inbox_due(limit=10)
+    assert processed == 1
+
+    final_state = await admin.get_saga(saga_id)
+    assert final_state.status == SagaStatus.COMPLETED
+    assert final_state.current_step_index == 1
+
+
+@pytest.mark.asyncio
 async def test_admin_retry_rejects_failed_saga_after_compensation(session_maker):
     class ReservingStep(BaseStep[StartInput, StartOutput]):
         async def execute(self, inp: StartInput) -> StartOutput:
@@ -944,3 +1120,128 @@ async def test_outbox_dispatcher_marks_message_failed_and_schedules_retry(
     assert rows[0].status == OutboxStatus.FAILED
     assert rows[0].attempts == 1
     assert rows[0].last_error is not None
+
+
+@pytest.mark.asyncio
+async def test_three_step_http_and_queue_style_flow(session_maker):
+    builder = SagaBuilder()
+    builder.add_step(
+        step=HttpStep(),
+        input_map=lambda ctx: HttpInput(order_id=ctx.initial_data["order_id"]),
+    )
+    builder.add_step(
+        step=ReserveQueueStep(),
+        input_map=lambda ctx: ReserveQueueInput(
+            order_id=ctx.initial_data["order_id"],
+            gateway_url=ctx.step_outputs["step_0"]["gateway_url"],
+            correlation_id=f"reserve-{ctx.initial_data['order_id']}",
+            event_type=(ctx.context.get("latest_event_meta") or {}).get("event_type"),
+            event_payload=ctx.latest_event,
+        ),
+    )
+    builder.add_step(
+        step=ActivateQueueStep(),
+        input_map=lambda ctx: ActivateQueueInput(
+            reservation_id=ctx.step_outputs["step_1"]["reservation_id"],
+            correlation_id=f"activate-{ctx.step_outputs['step_1']['reservation_id']}",
+            event_type=(ctx.context.get("latest_event_meta") or {}).get("event_type"),
+            event_payload=ctx.latest_event,
+        ),
+    )
+
+    orchestrator = SagaOrchestrator[IntegrationSagaState](
+        model_class=IntegrationSagaState,
+        outbox_model_class=IntegrationOutboxMessage,
+        session_maker=session_maker,
+    )
+    admin = SagaAdmin[IntegrationSagaState](engine=orchestrator.engine)
+    orchestrator.register("http-queue-3", builder.build())
+
+    queue: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+
+    class QueuePublisher:
+        async def publish(
+            self,
+            *,
+            topic: str,
+            payload: dict[str, object],
+            key: str | None = None,
+            headers: dict[str, object] | None = None,
+        ) -> None:
+            await queue.put(
+                {
+                    "topic": topic,
+                    "payload": payload,
+                    "headers": headers or {},
+                }
+            )
+
+    dispatcher = OutboxDispatcher(
+        session_maker=session_maker,
+        model_class=IntegrationOutboxMessage,
+        publisher=QueuePublisher(),
+    )
+
+    saga_id = await orchestrator.start(
+        saga_name="http-queue-3",
+        initial_data={"order_id": "order-200"},
+        aggregation_id="agg-http-queue-3",
+    )
+
+    state_after_start = await admin.get_saga(saga_id)
+    assert state_after_start.status == SagaStatus.SUSPENDED
+    assert state_after_start.current_step_index == 1
+    assert state_after_start.context["awaiting_event_type"] == "reserve.success"
+
+    processed = await dispatcher.run_once(limit=10)
+    assert processed == 1
+    first_command = await queue.get()
+    queue.task_done()
+    first_headers = first_command["headers"]
+    assert isinstance(first_headers, dict)
+
+    reserve_token = (await admin.get_saga(saga_id)).step_execution_token
+    await orchestrator.notify(
+        saga_id=saga_id,
+        token=reserve_token,  # type: ignore[arg-type]
+        event=NotifyEvent(
+            event_id="evt-reserve-1",
+            event_type="reserve.success",
+            correlation_id=first_headers["correlation_id"],  # type: ignore[index]
+            payload={"reservation_id": "res-200"},
+        ),
+    )
+
+    state_after_reserve = await admin.get_saga(saga_id)
+    assert state_after_reserve.status == SagaStatus.SUSPENDED
+    assert state_after_reserve.current_step_index == 2
+    assert state_after_reserve.context["awaiting_event_type"] == "activate.success"
+
+    processed = await dispatcher.run_once(limit=10)
+    assert processed == 1
+    second_command = await queue.get()
+    queue.task_done()
+    second_headers = second_command["headers"]
+    assert isinstance(second_headers, dict)
+
+    activate_token = (await admin.get_saga(saga_id)).step_execution_token
+    await orchestrator.notify(
+        saga_id=saga_id,
+        token=activate_token,  # type: ignore[arg-type]
+        event=NotifyEvent(
+            event_id="evt-activate-1",
+            event_type="activate.success",
+            correlation_id=second_headers["correlation_id"],  # type: ignore[index]
+            payload={"deployment_id": "dep-200"},
+        ),
+    )
+
+    final_state = await admin.get_saga(saga_id)
+    assert final_state.status == SagaStatus.COMPLETED
+    assert final_state.current_step_index == 3
+    waiting_entries = [
+        entry
+        for entry in final_state.step_history
+        if entry["status"] == "WAITING" and entry["phase"] == "execute"
+    ]
+    assert len(waiting_entries) == 2
