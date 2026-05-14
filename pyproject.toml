@@ -1,10 +1,13 @@
 [build-system]
-requires = ["setuptools>=69", "wheel"]
+requires = ["setuptools>=64", "setuptools-scm>=8"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools_scm]
+version_file = "src/saga_orchestrator/_version.py"
 
 [project]
 name = "python-saga-orchestrator"
-version = "0.1.4"
+dynamic = ["version"]
 description = "Lightweight embedded saga orchestrator for asyncio Python services"
 readme = "README.md"
 requires-python = ">=3.12"
