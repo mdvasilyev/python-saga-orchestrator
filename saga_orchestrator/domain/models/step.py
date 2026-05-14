@@ -123,5 +123,7 @@ class BaseStep(Generic[InputModelT, OutputModelT]):
     async def execute(self, inp: InputModelT) -> OutputModelT | StepAwaitEvent:
         raise NotImplementedError
 
-    async def compensate(self, inp: InputModelT, out: OutputModelT) -> StepAwaitEvent | None:
+    async def compensate(
+        self, inp: InputModelT, out: OutputModelT
+    ) -> StepAwaitEvent | None:
         raise NotImplementedError

@@ -277,9 +277,7 @@ class SagaEngine(Generic[ModelT]):
                     )
                     return NotifyResult.CORRELATION_MISMATCH
 
-                awaiting_until = self._parse_iso_datetime(
-                    context.get("awaiting_until")
-                )
+                awaiting_until = self._parse_iso_datetime(context.get("awaiting_until"))
                 if awaiting_until is not None and datetime.now(UTC) > awaiting_until:
                     self._append_notify_log(
                         saga=saga,
@@ -438,8 +436,10 @@ class SagaEngine(Generic[ModelT]):
                 )
                 remaining -= len(due_compensating)
 
-                due_compensating_suspended = await self._repository.due_compensating_suspended(
-                    session, now=now, limit=max(remaining, 0)
+                due_compensating_suspended = (
+                    await self._repository.due_compensating_suspended(
+                        session, now=now, limit=max(remaining, 0)
+                    )
                 )
 
                 for saga in [*due_running, *due_suspended]:
@@ -783,16 +783,12 @@ class SagaEngine(Generic[ModelT]):
                         context.pop("awaiting_event_types", None)
                         context.pop("awaiting_event_type", None)
                     else:
-                        context["awaiting_event_types"] = list(
-                            wait_spec.event_types
-                        )
+                        context["awaiting_event_types"] = list(wait_spec.event_types)
                         context["awaiting_event_type"] = wait_spec.event_types[0]
                     if wait_spec.correlation_id is None:
                         context.pop("awaiting_correlation_id", None)
                     else:
-                        context["awaiting_correlation_id"] = (
-                            wait_spec.correlation_id
-                        )
+                        context["awaiting_correlation_id"] = wait_spec.correlation_id
                     if wait_spec.until is None:
                         context.pop("awaiting_until", None)
                         saga.deadline_at = None
@@ -921,7 +917,9 @@ class SagaEngine(Generic[ModelT]):
             wait_spec: StepAwaitEvent | None = None
 
             try:
-                comp_result = await step_def.step.compensate(original_input, original_output)
+                comp_result = await step_def.step.compensate(
+                    original_input, original_output
+                )
                 if isinstance(comp_result, StepAwaitEvent):
                     wait_spec = comp_result
             except Exception as exc:  # noqa: BLE001
@@ -971,9 +969,7 @@ class SagaEngine(Generic[ModelT]):
 
                 if execution_entry is None:
                     saga.status = SagaStatus.FAILED
-                    saga.last_error = (
-                        f"Missing successful execution entry for step '{step_def.step_id}'"
-                    )
+                    saga.last_error = f"Missing successful execution entry for step '{step_def.step_id}'"
                     saga.deadline_at = None
                     return None
 
@@ -1020,13 +1016,20 @@ class SagaEngine(Generic[ModelT]):
                         self._history_entry(
                             phase=SagaStepPhase.COMPENSATE,
                             status=SagaStepStatus.WAITING,
-                            step_def=step_def, token=token, attempt=attempt_number,
-                            step_input=original_input, step_output=original_output,
+                            step_def=step_def,
+                            token=token,
+                            attempt=attempt_number,
+                            step_input=original_input,
+                            step_output=original_output,
                             error=None,
                         )
                     )
-                    context["awaiting_event_types"] = list(wait_spec.event_types) if wait_spec.event_types else []
-                    context["awaiting_event_type"] = wait_spec.event_types[0] if wait_spec.event_types else None
+                    context["awaiting_event_types"] = (
+                        list(wait_spec.event_types) if wait_spec.event_types else []
+                    )
+                    context["awaiting_event_type"] = (
+                        wait_spec.event_types[0] if wait_spec.event_types else None
+                    )
                     context["awaiting_correlation_id"] = wait_spec.correlation_id
                     if wait_spec.until:
                         until = datetime.now(UTC) + wait_spec.until
@@ -1045,12 +1048,17 @@ class SagaEngine(Generic[ModelT]):
                         self._history_entry(
                             phase=SagaStepPhase.COMPENSATE,
                             status=SagaStepStatus.ERROR,
-                            step_def=step_def, token=token, attempt=attempt_number,
-                            step_input=original_input, step_output=original_output,
+                            step_def=step_def,
+                            token=token,
+                            attempt=attempt_number,
+                            step_input=original_input,
+                            step_output=original_output,
                             error=error,
                         )
                     )
-                    saga.last_error = f"Compensation failed for step '{step_def.step_id}': {error!r}"
+                    saga.last_error = (
+                        f"Compensation failed for step '{step_def.step_id}': {error!r}"
+                    )
 
                     next_attempt = saga.retry_counter + 1
                     delay = step_def.retry_policy.next_delay(next_attempt)
@@ -1304,7 +1312,9 @@ class SagaEngine(Generic[ModelT]):
     @staticmethod
     def _has_compensation_history(step_history: list[dict[str, Any]]) -> bool:
         """Return whether step history contains a compensation entry."""
-        return any(entry.get("phase") == SagaStepPhase.COMPENSATE for entry in step_history)
+        return any(
+            entry.get("phase") == SagaStepPhase.COMPENSATE for entry in step_history
+        )
 
     def _running_deadline_for_step(
         self,

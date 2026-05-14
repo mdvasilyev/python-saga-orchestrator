@@ -167,11 +167,11 @@ class SagaRepository(Generic[ModelT]):
         return bind is not None and bind.dialect.name == "postgresql"
 
     async def due_compensating_suspended(
-            self,
-            session: AsyncSession,
-            *,
-            now: datetime,
-            limit: int,
+        self,
+        session: AsyncSession,
+        *,
+        now: datetime,
+        limit: int,
     ) -> list[ModelT]:
         """Find due sagas in COMPENSATING_SUSPENDED status."""
         return await self._due_by_status(

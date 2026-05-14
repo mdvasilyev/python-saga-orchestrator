@@ -200,12 +200,14 @@ class InboxWaitStep(BaseStep[InboxWaitInput, InboxWaitOutput]):
 
 class FailingStep(BaseStep[NextInput, NextOutput]):
     """Простой шаг, который всегда падает, чтобы запустить компенсацию."""
+
     async def execute(self, inp: NextInput) -> NextOutput:
         raise RuntimeError("boom")
 
 
 class CompensateWaitsStep(BaseStep[StartInput, StartOutput]):
     """Шаг, чья компенсация может ожидать события."""
+
     def __init__(self) -> None:
         self.compensation_calls = 0
         self.compensation_completed = False
@@ -213,7 +215,9 @@ class CompensateWaitsStep(BaseStep[StartInput, StartOutput]):
     async def execute(self, inp: StartInput) -> StartOutput:
         return StartOutput(value=inp.value + 1)
 
-    async def compensate(self, inp: StartInput, out: StartOutput) -> StepAwaitEvent | None:
+    async def compensate(
+        self, inp: StartInput, out: StartOutput
+    ) -> StepAwaitEvent | None:
         self.compensation_calls += 1
         if self.compensation_calls == 1:
             return StepAwaitEvent(
@@ -222,9 +226,11 @@ class CompensateWaitsStep(BaseStep[StartInput, StartOutput]):
             )
         self.compensation_completed = True
         return None
+
 
 class CompensateWaitsWithTimeoutStep(BaseStep[StartInput, StartOutput]):
     """Шаг, чья компенсация ожидает события с таймаутом."""
+
     def __init__(self) -> None:
         self.compensation_calls = 0
         self.compensation_completed = False
@@ -232,19 +238,23 @@ class CompensateWaitsWithTimeoutStep(BaseStep[StartInput, StartOutput]):
     async def execute(self, inp: StartInput) -> StartOutput:
         return StartOutput(value=inp.value + 1)
 
-    async def compensate(self, inp: StartInput, out: StartOutput) -> StepAwaitEvent | None:
+    async def compensate(
+        self, inp: StartInput, out: StartOutput
+    ) -> StepAwaitEvent | None:
         self.compensation_calls += 1
         if self.compensation_calls == 1:
             return StepAwaitEvent(
                 event_types=("compensation.continue",),
                 correlation_id=f"compensate-{out.value}",
-                until=timedelta(milliseconds=1)
+                until=timedelta(milliseconds=1),
             )
         self.compensation_completed = True
         return None
 
+
 class FlakyCompensateStep(BaseStep[StartInput, StartOutput]):
     """Шаг, чья компенсация падает при первом вызове."""
+
     def __init__(self) -> None:
         self.compensation_calls = 0
         self.compensation_completed = False

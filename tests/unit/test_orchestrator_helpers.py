@@ -24,8 +24,10 @@ class RootStep(BaseStep[RootInput, RootOutput]):
     async def execute(self, inp: RootInput) -> RootOutput:
         return RootOutput(value=inp.value)
 
+
 class MockSaga(SagaStateMixin):
     """A mock saga object that satisfies the interface needed by _build_step_input."""
+
     def __init__(self, id: uuid.UUID, context: dict):
         self.id = id
         self.context = context
