@@ -18,9 +18,9 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
-from .context import SagaContext
 from ...outbox.event import OutboxEvent
 from ..exceptions import TypeValidationError
+from .context import SagaContext
 from .retry import RetryPolicy
 
 InputModelT = TypeVar("InputModelT", bound=BaseModel)
