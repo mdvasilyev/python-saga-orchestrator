@@ -13,6 +13,7 @@ from typing import (
     get_origin,
     get_type_hints,
 )
+from uuid import UUID
 
 from pydantic import BaseModel
 
@@ -45,6 +46,7 @@ class StepRef(Generic[OutputModelT]):
 
 @dataclass
 class InputContext:
+    saga_id: UUID
     initial_data: Any
     context: dict[str, Any]
     step_outputs: dict[str, Any]
@@ -121,5 +123,5 @@ class BaseStep(Generic[InputModelT, OutputModelT]):
     async def execute(self, inp: InputModelT) -> OutputModelT | StepAwaitEvent:
         raise NotImplementedError
 
-    async def compensate(self, inp: InputModelT, out: OutputModelT) -> None:
+    async def compensate(self, inp: InputModelT, out: OutputModelT) -> StepAwaitEvent | None:
         raise NotImplementedError

@@ -21,6 +21,7 @@ class SagaRepository(Generic[ModelT]):
         SagaStatus.RUNNING,
         SagaStatus.SUSPENDED,
         SagaStatus.COMPENSATING,
+        SagaStatus.COMPENSATING_SUSPENDED,
     )
 
     def __init__(self, model_class: type[ModelT]) -> None:
@@ -164,3 +165,18 @@ class SagaRepository(Generic[ModelT]):
         """Return whether the current dialect supports ``SKIP LOCKED``."""
         bind = session.get_bind()
         return bind is not None and bind.dialect.name == "postgresql"
+
+    async def due_compensating_suspended(
+            self,
+            session: AsyncSession,
+            *,
+            now: datetime,
+            limit: int,
+    ) -> list[ModelT]:
+        """Find due sagas in COMPENSATING_SUSPENDED status."""
+        return await self._due_by_status(
+            session=session,
+            status=SagaStatus.COMPENSATING_SUSPENDED,
+            now=now,
+            limit=limit,
+        )

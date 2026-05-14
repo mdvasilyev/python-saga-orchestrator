@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Any
 
 from sqlalchemy import JSON, DateTime, Enum, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.ext.mutable import MutableDict, MutableList
 from sqlalchemy.orm import Mapped, declarative_mixin, mapped_column
 
+from ..models.context import SagaContext, SagaStepHistoryEntry
 from ..models.enums import SagaStatus
 
 
@@ -33,10 +33,10 @@ class SagaStateMixin:
         UUID(as_uuid=True),
         nullable=True,
     )
-    context: Mapped[dict[str, Any]] = mapped_column(
+    context: Mapped[SagaContext] = mapped_column(
         MutableDict.as_mutable(_json_type()), default=dict
     )
-    step_history: Mapped[list[dict[str, Any]]] = mapped_column(
+    step_history: Mapped[list[SagaStepHistoryEntry]] = mapped_column(
         MutableList.as_mutable(_json_type()), default=list
     )
     deadline_at: Mapped[datetime | None] = mapped_column(
