@@ -1,0 +1,29 @@
+services:
+  db:
+    image: postgres:16-alpine3.19
+    container_name: saga-test-db
+    environment:
+      - POSTGRES_USER=testuser
+      - POSTGRES_PASSWORD=testpass
+      - POSTGRES_DB=testdb
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U testuser -d testdb"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  tests:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: saga-tests-runner
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      - TEST_DATABASE_URL=postgresql+asyncpg://testuser:testpass@db:5432/testdb
+    command: ["pytest", "-v", "-s"]
+
+networks:
+  default:
+    driver: bridge
