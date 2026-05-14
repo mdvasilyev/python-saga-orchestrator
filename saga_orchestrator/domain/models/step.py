@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import inspect
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -17,6 +18,7 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
+from .context import SagaContext
 from ...outbox.event import OutboxEvent
 from ..exceptions import TypeValidationError
 from .retry import RetryPolicy
@@ -48,10 +50,26 @@ class StepRef(Generic[OutputModelT]):
 class InputContext:
     saga_id: UUID
     initial_data: Any
-    context: dict[str, Any]
+    context: SagaContext
     step_outputs: dict[str, Any]
     latest_event: Any | None = None
     events: list[Any] | None = None
+
+    @property
+    def latest_event_type(self) -> str | None:
+        """
+        Возвращает тип ('event_type') последнего полученного события.
+        """
+        with contextlib.suppress(KeyError, TypeError):
+            return self.context["latest_event_meta"]["event_type"]
+        return None
+
+    @property
+    def latest_event_payload(self) -> Any | None:
+        """
+        Возвращает "сырую" полезную нагрузку (payload) последнего полученного события.
+        """
+        return self.context.get("latest_event")
 
 
 RootInputMap: TypeAlias = Callable[[InputContext], InputModelT | dict[str, Any]]
