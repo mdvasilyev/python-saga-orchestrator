@@ -5,12 +5,14 @@ WORKDIR /app/
 ENV PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PYTHONUNBUFFERED=1 \
-    UV_SYSTEM_PYTHON=1 \
     UV_NO_DEV=0 \
-    PATH="/app/.venv/bin:$PATH"
+    PATH="/app/.venv/bin:$PATH" \
+    SETUPTOOLS_SCM_PRETEND_VERSION_FOR_PYTHON_SAGA_ORCHESTRATOR="0.0.1.dev"
+
 COPY pyproject.toml pyproject.toml
+
 RUN uv sync
 
-COPY saga_orchestrator/ ./saga_orchestrator/
-COPY tests/ ./tests
+COPY saga_orchestrator saga_orchestrator
+COPY tests tests
 CMD ["pytest"]
