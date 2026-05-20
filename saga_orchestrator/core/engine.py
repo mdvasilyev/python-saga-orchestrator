@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Any, Generic, TypeVar
+from typing import Any, Callable, Generic, TypeVar
 from uuid import UUID
 
 from loguru import logger
@@ -30,6 +30,7 @@ from ..inbox.dispatcher import InboxDispatcher, InboxProcessOutcome, InboxProces
 from ..inbox.models import InboxMessageMixin
 from ..inbox.repository import InboxRepository
 from ..outbox.contracts import OutboxWriteMessage, OutboxWriter
+from ..outbox.event import OutboxEvent
 from ..outbox.factory import DefaultOutboxMessageFactory, OutboxMessageFactory
 from ..outbox.models import OutboxMessageMixin
 from ..outbox.repository import OutboxRepository
@@ -143,6 +144,7 @@ class SagaEngine(Generic[ModelT]):
             now=datetime.now(UTC),
         )
         context: SagaContext = {
+            "saga_id": str(saga_id),
             "saga_name": saga_name,
             "initial_data": normalized_initial,
             "step_outputs": {},
@@ -166,7 +168,32 @@ class SagaEngine(Generic[ModelT]):
                     retry_counter=0,
                 )
                 await self._repository.create(session, saga)
+                if definition.on_start_map:
+                    if self._outbox_writer is None:
+                        raise SagaStateError(
+                            "on_start is configured, but outbox writer is not"
+                        )
 
+                    input_ctx = InputContext(
+                        saga_id=saga.id,
+                        initial_data=context.get("initial_data"),
+                        context=context,
+                        step_outputs={},
+                    )
+                    outbox_events = definition.on_start_map(input_ctx) or []
+                    if outbox_events:
+                        messages = self._outbox_message_factory.build_messages(
+                            saga_id=saga.id,
+                            aggregation_id=saga.aggregation_id,
+                            step_id="__saga_start__",
+                            trace_id=saga.trace_id,
+                            step_input=None,
+                            step_output=None,
+                            events=outbox_events,
+                            now=datetime.now(UTC),
+                            serializer=self._outbox_serializer,
+                        )
+                        await self._outbox_writer.save(session, messages)
         await self._drive(saga_id)
         return saga_id
 
@@ -630,6 +657,49 @@ class SagaEngine(Generic[ModelT]):
         if should_resume:
             await self._drive(saga_id)
 
+    async def _handle_terminal_state(
+        self,
+        session: AsyncSession,
+        saga: ModelT,
+        definition: SagaDefinition,
+    ) -> None:
+        """Generate outbox events for terminal state hooks."""
+        hook_map: Callable[..., Any] | None = None
+        events: list[OutboxEvent] = []
+
+        if saga.status == SagaStatus.COMPLETED and definition.on_completed_map:
+            hook_map = definition.on_completed_map
+            events = hook_map(saga.context) or []
+        elif saga.status == SagaStatus.FAILED and definition.on_failed_map:
+            hook_map = definition.on_failed_map
+            events = hook_map(saga.context, saga.last_error) or []
+        elif saga.status == SagaStatus.COMPENSATED and definition.on_compensated_map:
+            hook_map = definition.on_compensated_map
+            events = hook_map(saga.context) or []
+
+        if not events:
+            return
+
+        if self._outbox_writer is None:
+            raise SagaStateError(
+                f"{saga.status} hook is configured, but outbox writer is not"
+            )
+
+        messages: list[OutboxWriteMessage] = (
+            self._outbox_message_factory.build_messages(
+                saga_id=saga.id,
+                aggregation_id=saga.aggregation_id,
+                step_id=f"__saga_{saga.status.lower()}__",  # e.g. __saga_completed__
+                trace_id=saga.trace_id,
+                step_input=None,
+                step_output=None,
+                events=events,
+                now=datetime.now(UTC),
+                serializer=self._outbox_serializer,
+            )
+        )
+        await self._outbox_writer.save(session, messages)
+
     async def _drive(self, saga_id: UUID) -> None:
         """Execute forward steps until the saga stops progressing."""
         while True:
@@ -811,7 +881,7 @@ class SagaEngine(Generic[ModelT]):
                                 "outbox_map is configured for step "
                                 f"'{step_def.step_id}', but outbox writer is not configured in SagaEngine"
                             )
-                        outbox_events = (
+                        outbox_events: list[OutboxEvent] = (
                             step_def.outbox_map(step_input, step_output) or []
                         )
                         if outbox_events:
@@ -856,6 +926,7 @@ class SagaEngine(Generic[ModelT]):
                     definition = self._registry[saga_name]
                     if saga.current_step_index >= len(definition.steps):
                         saga.status = SagaStatus.COMPLETED
+                        await self._handle_terminal_state(session, saga, definition)
                     return saga.status == SagaStatus.RUNNING
 
                 if error is None:
@@ -895,6 +966,7 @@ class SagaEngine(Generic[ModelT]):
                 else:
                     saga.status = SagaStatus.FAILED
                     saga.deadline_at = None
+                    await self._handle_terminal_state(session, saga, definition)
                     return False
 
         await self._run_compensation(saga_id)
@@ -949,9 +1021,6 @@ class SagaEngine(Generic[ModelT]):
                 saga_name = saga.context["saga_name"]
                 definition = self._registry[saga_name]
                 if saga.current_step_index <= 0:
-                    saga.status = SagaStatus.COMPENSATED
-                    saga.last_error = "Compensation completed"
-                    saga.deadline_at = None
                     return None
 
                 step_idx = saga.current_step_index - 1
@@ -1072,6 +1141,8 @@ class SagaEngine(Generic[ModelT]):
 
                     saga.status = SagaStatus.FAILED
                     saga.deadline_at = None
+                    definition = self._registry[saga.context["saga_name"]]
+                    await self._handle_terminal_state(session, saga, definition)
                     return False
 
                 saga.step_history.append(
@@ -1095,6 +1166,8 @@ class SagaEngine(Generic[ModelT]):
                     saga.status = SagaStatus.COMPENSATED
                     saga.last_error = "Compensation completed successfully"
                     saga.deadline_at = None
+                    definition = self._registry[saga.context["saga_name"]]
+                    await self._handle_terminal_state(session, saga, definition)
                     return False
 
                 saga.deadline_at = datetime.now(UTC) + self._execution_lease

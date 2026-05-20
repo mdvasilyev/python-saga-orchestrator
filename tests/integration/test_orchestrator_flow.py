@@ -8,6 +8,7 @@ import pytest
 from pydantic import BaseModel
 from sqlalchemy import select
 
+from saga_orchestrator import InputContext
 from saga_orchestrator.admin import SagaAdmin
 from saga_orchestrator.core import SagaBuilder
 from saga_orchestrator.core.orchestrator import SagaOrchestrator
@@ -16,6 +17,7 @@ from saga_orchestrator.domain.exceptions import (
     SagaStateError,
 )
 from saga_orchestrator.domain.models import BaseStep, ExponentialRetry, StepAwaitEvent
+from saga_orchestrator.domain.models.context import SagaContext
 from saga_orchestrator.domain.models.enums import SagaStatus, SagaStepPhase
 from saga_orchestrator.domain.models.enums.saga_step_status import SagaStepStatus
 from saga_orchestrator.domain.models.notify import (
@@ -267,9 +269,6 @@ class FlakyCompensateStep(BaseStep[StartInput, StartOutput]):
         if self.compensation_calls == 1:
             raise RuntimeError("compensation failed once")
         self.compensation_completed = True
-
-
-# ... (все остальные классы шагов остаются без изменений)
 
 
 @pytest.mark.asyncio
@@ -1606,3 +1605,267 @@ async def test_saga_reaches_failed_status_when_compensation_fails(session_maker)
     )
     assert compensate_history_entry is not None
     assert compensate_history_entry["status"] == SagaStepStatus.ERROR
+
+
+class SagaStartedEvent(BaseModel):
+    saga_id: uuid.UUID
+    initial_value: int
+
+
+class SagaTerminalEvent(BaseModel):
+    saga_id: uuid.UUID
+    final_status: str
+    order_id: str
+    last_error: str | None = None
+    final_value: int | None = None
+
+
+def create_start_event(ctx: InputContext) -> list[OutboxEvent]:
+    payload = SagaStartedEvent(
+        saga_id=ctx.saga_id,
+        initial_value=ctx.initial_data["value"],
+    )
+    return [
+        OutboxEvent(
+            topic="saga.lifecycle.started",
+            payload=payload.model_dump(mode="json"),
+        )
+    ]
+
+
+def create_completed_event(ctx: SagaContext) -> list[OutboxEvent]:
+    final_value = ctx["step_outputs"]["step_0"]["value"]
+    payload = SagaTerminalEvent(
+        saga_id=uuid.UUID(ctx["saga_id"]),
+        final_status="COMPLETED",
+        order_id=ctx["initial_data"]["order_id"],
+        final_value=final_value,
+    )
+    return [
+        OutboxEvent(
+            topic="saga.lifecycle.terminal",
+            payload=payload.model_dump(mode="json"),
+        )
+    ]
+
+
+def create_compensated_event(ctx: SagaContext) -> list[OutboxEvent]:
+    payload = SagaTerminalEvent(
+        saga_id=uuid.UUID(ctx["saga_id"]),
+        final_status="COMPENSATED",
+        order_id=ctx["initial_data"]["order_id"],
+    )
+    return [
+        OutboxEvent(
+            topic="saga.lifecycle.terminal",
+            payload=payload.model_dump(mode="json"),
+        )
+    ]
+
+
+def create_failed_event(ctx: SagaContext, last_error: str | None) -> list[OutboxEvent]:
+    payload = SagaTerminalEvent(
+        saga_id=uuid.UUID(ctx["saga_id"]),
+        final_status="FAILED",
+        order_id=ctx["initial_data"]["order_id"],
+        last_error=last_error,
+    )
+    return [
+        OutboxEvent(
+            topic="saga.lifecycle.terminal",
+            payload=payload.model_dump(mode="json"),
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_on_start_hook_creates_outbox_event(session_maker):
+    """
+    Проверяет, что хук on_start создает событие в outbox в момент старта саги.
+    """
+    builder = SagaBuilder()
+    builder.on_start(create_start_event)
+    builder.add_step(
+        step=AddOneStep(),
+        input_map=lambda ctx: StartInput(value=ctx.initial_data["value"]),
+    )
+
+    orchestrator = SagaOrchestrator[IntegrationSagaState](
+        model_class=IntegrationSagaState,
+        outbox_model_class=IntegrationOutboxMessage,
+        session_maker=session_maker,
+    )
+    orchestrator.register("hook-start", builder.build())
+
+    await orchestrator.start(
+        saga_name="hook-start",
+        initial_data={"value": 100, "order_id": "ord-start"},
+        aggregation_id="agg-hook-start",
+    )
+
+    async with session_maker() as session:
+        result = await session.execute(select(IntegrationOutboxMessage))
+        rows = list(result.scalars().all())
+
+    assert len(rows) == 1
+    outbox_msg = rows[0]
+    assert outbox_msg.topic == "saga.lifecycle.started"
+    assert outbox_msg.payload["initial_value"] == 100
+    assert outbox_msg.step_id == "__saga_start__"
+
+
+@pytest.mark.asyncio
+async def test_on_completed_hook_creates_outbox_event(session_maker):
+    """
+    Проверяет, что хук on_completed создает событие в outbox после успешного завершения саги.
+    """
+    builder = SagaBuilder()
+    builder.on_completed(create_completed_event)
+    builder.add_step(
+        step_id="step_0",
+        step=AddOneStep(),
+        input_map=lambda ctx: StartInput(value=ctx.initial_data["value"]),
+    )
+
+    orchestrator = SagaOrchestrator[IntegrationSagaState](
+        model_class=IntegrationSagaState,
+        outbox_model_class=IntegrationOutboxMessage,
+        session_maker=session_maker,
+    )
+    orchestrator.register("hook-completed", builder.build())
+
+    await orchestrator.start(
+        saga_name="hook-completed",
+        initial_data={"value": 200, "order_id": "ord-completed"},
+        aggregation_id="agg-hook-completed",
+    )
+
+    async with session_maker() as session:
+        result = await session.execute(select(IntegrationOutboxMessage))
+        rows = list(result.scalars().all())
+
+    assert len(rows) == 1
+    outbox_msg = rows[0]
+    assert outbox_msg.topic == "saga.lifecycle.terminal"
+    assert outbox_msg.payload["final_status"] == "COMPLETED"
+    assert outbox_msg.payload["order_id"] == "ord-completed"
+    assert outbox_msg.payload["final_value"] == 201  # 200 + 1
+    assert outbox_msg.step_id == "__saga_completed__"
+
+
+@pytest.mark.asyncio
+async def test_on_compensated_hook_creates_outbox_event(session_maker):
+    """
+    Проверяет, что хук on_compensated создает событие в outbox после успешной компенсации.
+    """
+    builder = SagaBuilder()
+    builder.on_compensated(create_compensated_event)
+    ref = builder.add_step(
+        step=CompensatingStep(),
+        input_map=lambda ctx: StartInput(value=ctx.initial_data["value"]),
+    )
+    builder.add_step(
+        step=FailingStep(),
+        depends_on=ref,
+        input_map=lambda out: NextInput(value=out.value),
+        retry_policy=ExponentialRetry(max_attempts=0, base_delay=timedelta(seconds=0)),
+    )
+
+    orchestrator = SagaOrchestrator[IntegrationSagaState](
+        model_class=IntegrationSagaState,
+        outbox_model_class=IntegrationOutboxMessage,
+        session_maker=session_maker,
+    )
+    orchestrator.register("hook-compensated", builder.build())
+
+    await orchestrator.start(
+        saga_name="hook-compensated",
+        initial_data={"value": 300, "order_id": "ord-compensated"},
+        aggregation_id="agg-hook-compensated",
+    )
+
+    async with session_maker() as session:
+        result = await session.execute(select(IntegrationOutboxMessage))
+        rows = list(result.scalars().all())
+
+    assert len(rows) == 1
+    outbox_msg = rows[0]
+    assert outbox_msg.topic == "saga.lifecycle.terminal"
+    assert outbox_msg.payload["final_status"] == "COMPENSATED"
+    assert outbox_msg.payload["order_id"] == "ord-compensated"
+    assert outbox_msg.step_id == "__saga_compensated__"
+
+
+@pytest.mark.asyncio
+async def test_on_failed_hook_creates_outbox_event(session_maker):
+    """
+    Проверяет, что хук on_failed создает событие в outbox, когда сага падает.
+    В данном случае - из-за провала компенсации.
+    """
+    builder = SagaBuilder()
+    builder.on_failed(create_failed_event)
+    ref = builder.add_step(
+        step=IrreversibleStep(),
+        input_map=lambda ctx: StartInput(value=ctx.initial_data["value"]),
+        retry_policy=ExponentialRetry(max_attempts=0, base_delay=timedelta(seconds=0)),
+    )
+    builder.add_step(
+        step=FailingStep(),
+        depends_on=ref,
+        input_map=lambda out: NextInput(value=out.value),
+        retry_policy=ExponentialRetry(max_attempts=0, base_delay=timedelta(seconds=0)),
+    )
+
+    orchestrator = SagaOrchestrator[IntegrationSagaState](
+        model_class=IntegrationSagaState,
+        outbox_model_class=IntegrationOutboxMessage,
+        session_maker=session_maker,
+    )
+    orchestrator.register("hook-failed", builder.build())
+
+    await orchestrator.start(
+        saga_name="hook-failed",
+        initial_data={"value": 400, "order_id": "ord-failed"},
+        aggregation_id="agg-hook-failed",
+    )
+
+    async with session_maker() as session:
+        result = await session.execute(select(IntegrationOutboxMessage))
+        rows = list(result.scalars().all())
+
+    assert len(rows) == 1
+    outbox_msg = rows[0]
+    assert outbox_msg.topic == "saga.lifecycle.terminal"
+    assert outbox_msg.payload["final_status"] == "FAILED"
+    assert outbox_msg.payload["order_id"] == "ord-failed"
+    assert "Cannot be compensated" in outbox_msg.payload["last_error"]
+    assert outbox_msg.step_id == "__saga_failed__"
+
+
+@pytest.mark.asyncio
+async def test_hook_raises_error_if_outbox_is_not_configured(session_maker):
+    """
+    Проверяет, что движок падает с ошибкой, если хук определен,
+    а outbox writer не сконфигурирован.
+    """
+    builder = SagaBuilder()
+    builder.on_start(create_start_event)
+    builder.add_step(
+        step=AddOneStep(),
+        input_map=lambda ctx: StartInput(value=ctx.initial_data["value"]),
+    )
+
+    orchestrator = SagaOrchestrator[IntegrationSagaState](
+        model_class=IntegrationSagaState,
+        session_maker=session_maker,
+    )
+    orchestrator.register("hook-no-outbox", builder.build())
+
+    with pytest.raises(SagaStateError) as exc_info:
+        await orchestrator.start(
+            saga_name="hook-no-outbox",
+            initial_data={"value": 1, "order_id": "ord-no-outbox"},
+            aggregation_id="agg-hook-no-outbox",
+        )
+
+    assert "on_start is configured, but outbox writer is not" in str(exc_info.value)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, NotRequired, TypedDict
+from uuid import UUID
 
 from .enums import SagaStepPhase, SagaStepStatus
 
@@ -37,6 +38,7 @@ class SagaContext(TypedDict):
     """
 
     # -- Core data --
+    saga_id: str
     saga_name: str
     initial_data: Any
     step_outputs: dict[str, dict[str, Any]]  # step_id -> serialized output model

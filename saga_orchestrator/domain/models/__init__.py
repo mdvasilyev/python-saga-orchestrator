@@ -1,6 +1,6 @@
 """Domain models module."""
 
-from .builder import SagaDefinition
+from .builder import OnFailedMap, OnStartMap, OnTerminalStateMap, SagaDefinition
 from .notify import AwaitingEvent, NotifyEvent, NotifyResult
 from .retry import ExponentialRetry, FixedRetry, NoRetry, RetryPolicy
 from .saga_snapshot import SagaAdminSnapshot, SagaSnapshot
@@ -16,6 +16,9 @@ from .step import (
 
 __all__ = [
     "SagaDefinition",
+    "OnStartMap",
+    "OnTerminalStateMap",
+    "OnFailedMap",
     "AwaitingEvent",
     "NotifyEvent",
     "NotifyResult",
