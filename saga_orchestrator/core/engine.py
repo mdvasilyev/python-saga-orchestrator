@@ -143,12 +143,12 @@ class SagaEngine(Generic[ModelT]):
             definition.steps[0],
             now=datetime.now(UTC),
         )
-        context: SagaContext = {
-            "saga_id": str(saga_id),
-            "saga_name": saga_name,
-            "initial_data": normalized_initial,
-            "step_outputs": {},
-        }
+        context = SagaContext(
+            saga_id=saga_id,
+            saga_name=saga_name,
+            initial_data=normalized_initial,
+            step_outputs={},
+        )
         async with self._session_maker() as session:
             async with session.begin():
                 await self._repository.ensure_no_active_aggregation_conflict(
@@ -176,7 +176,7 @@ class SagaEngine(Generic[ModelT]):
 
                     input_ctx = InputContext(
                         saga_id=saga.id,
-                        initial_data=context.get("initial_data"),
+                        initial_data=context.initial_data,
                         context=context,
                         step_outputs={},
                     )
@@ -246,7 +246,7 @@ class SagaEngine(Generic[ModelT]):
                     return NotifyResult.STALE_TOKEN
 
                 context: SagaContext = saga.context
-                processed_ids = context.setdefault("processed_event_ids", [])
+                processed_ids = context.processed_event_ids
                 if idempotency_key is not None and idempotency_key in processed_ids:
                     self._append_notify_log(
                         saga=saga,
@@ -255,8 +255,8 @@ class SagaEngine(Generic[ModelT]):
                     )
                     return NotifyResult.DUPLICATE
 
-                expected_types = context.get("awaiting_event_types")
-                expected_type = context.get("awaiting_event_type")
+                expected_types = context.awaiting_event_types
+                expected_type = context.awaiting_event_type
                 if normalized_event is None and (
                     expected_type is not None
                     or (isinstance(expected_types, list) and len(expected_types) > 0)
@@ -291,7 +291,7 @@ class SagaEngine(Generic[ModelT]):
                     )
                     return NotifyResult.EVENT_TYPE_MISMATCH
 
-                expected_correlation = context.get("awaiting_correlation_id")
+                expected_correlation = context.awaiting_correlation_id
                 if (
                     expected_correlation is not None
                     and normalized_event is not None
@@ -304,7 +304,7 @@ class SagaEngine(Generic[ModelT]):
                     )
                     return NotifyResult.CORRELATION_MISMATCH
 
-                awaiting_until = self._parse_iso_datetime(context.get("awaiting_until"))
+                awaiting_until = self._parse_iso_datetime(context.awaiting_until)
                 if awaiting_until is not None and datetime.now(UTC) > awaiting_until:
                     self._append_notify_log(
                         saga=saga,
@@ -314,21 +314,21 @@ class SagaEngine(Generic[ModelT]):
                     return NotifyResult.EXPIRED
 
                 if normalized_event is not None:
-                    events = context.setdefault("events", [])
+                    events = context.events
                     events.append(self._serialize_value(normalized_event.payload))
-                    context["latest_event"] = self._serialize_value(
+                    context.latest_event = self._serialize_value(
                         normalized_event.payload
                     )
-                    context["latest_event_meta"] = self._serialize_value(
+                    context.latest_event_meta = self._serialize_value(
                         normalized_event.model_dump(mode="json")
                     )
                     if idempotency_key is not None:
                         processed_ids.append(idempotency_key)
 
-                context.pop("awaiting_event_type", None)
-                context.pop("awaiting_event_types", None)
-                context.pop("awaiting_correlation_id", None)
-                context.pop("awaiting_until", None)
+                context.awaiting_event_type = None
+                context.awaiting_event_types = []
+                context.awaiting_correlation_id = None
+                context.awaiting_until = None
 
                 if saga.status == SagaStatus.SUSPENDED:
                     saga.status = SagaStatus.RUNNING
@@ -337,7 +337,7 @@ class SagaEngine(Generic[ModelT]):
                     saga.status = SagaStatus.COMPENSATING
                     should_drive_forward = False
 
-                step_def = self._registry[context["saga_name"]].steps[
+                step_def = self._registry[context.saga_name].steps[
                     saga.current_step_index
                 ]
                 saga.deadline_at = self._running_deadline_for_step(
@@ -417,25 +417,25 @@ class SagaEngine(Generic[ModelT]):
                     )
                 context: SagaContext = saga.context
                 if event.event_type is None:
-                    context.pop("awaiting_event_type", None)
+                    context.awaiting_event_type = None
                 else:
-                    context["awaiting_event_type"] = event.event_type
+                    context.awaiting_event_type = event.event_type
                 if event.event_types is None:
-                    context.pop("awaiting_event_types", None)
+                    context.awaiting_event_types = []
                 else:
-                    context["awaiting_event_types"] = list(event.event_types)
+                    context.awaiting_event_types = list(event.event_types)
                     if event.event_type is None:
-                        context["awaiting_event_type"] = event.event_types[0]
+                        context.awaiting_event_type = event.event_types[0]
 
                 if event.correlation_id is None:
-                    context.pop("awaiting_correlation_id", None)
+                    context.awaiting_correlation_id = None
                 else:
-                    context["awaiting_correlation_id"] = event.correlation_id
+                    context.awaiting_correlation_id = event.correlation_id
 
                 if event.until is None:
-                    context.pop("awaiting_until", None)
+                    context.awaiting_until = None
                 else:
-                    context["awaiting_until"] = event.until.isoformat()
+                    context.awaiting_until = event.until.isoformat()
 
                 # External event waits should not be auto-resumed by run_due.
                 saga.deadline_at = None
@@ -526,7 +526,7 @@ class SagaEngine(Generic[ModelT]):
                         f"Cannot retry step when saga status is {saga.status}"
                     )
 
-                saga_name = saga.context["saga_name"]
+                saga_name = saga.context.saga_name
                 definition = self._registry[saga_name]
                 if saga.current_step_index >= len(definition.steps):
                     raise SagaStateError(
@@ -605,7 +605,7 @@ class SagaEngine(Generic[ModelT]):
                         f"(status={saga.status})"
                     )
 
-                saga_name = saga.context["saga_name"]
+                saga_name = saga.context.saga_name
                 definition = self._registry[saga_name]
                 if saga.current_step_index >= len(definition.steps):
                     raise SagaStateError("No step available for skipping")
@@ -635,7 +635,7 @@ class SagaEngine(Generic[ModelT]):
                     "skipped": True,
                 }
                 saga.step_history.append(step_history)
-                outputs = saga.context.setdefault("step_outputs", {})
+                outputs = saga.context.step_outputs
                 outputs[step_def.step_id] = output_model.model_dump(mode="json")
                 saga.current_step_index += 1
                 saga.retry_counter = 0
@@ -753,7 +753,7 @@ class SagaEngine(Generic[ModelT]):
         async with self._session_maker() as session:
             async with session.begin():
                 saga = await self._repository.get_for_update(session, saga_id)
-                saga_name = saga.context.get("saga_name")
+                saga_name = saga.context.saga_name
                 if not saga_name or saga_name not in self._registry:
                     raise SagaDefinitionError(
                         f"Unknown saga registered name in state: '{saga_name}'"
@@ -850,27 +850,27 @@ class SagaEngine(Generic[ModelT]):
                     )
 
                     if wait_spec.event_types is None:
-                        context.pop("awaiting_event_types", None)
-                        context.pop("awaiting_event_type", None)
+                        context.awaiting_event_types = []
+                        context.awaiting_event_type = None
                     else:
-                        context["awaiting_event_types"] = list(wait_spec.event_types)
-                        context["awaiting_event_type"] = wait_spec.event_types[0]
+                        context.awaiting_event_types = list(wait_spec.event_types)
+                        context.awaiting_event_type = wait_spec.event_types[0]
                     if wait_spec.correlation_id is None:
-                        context.pop("awaiting_correlation_id", None)
+                        context.awaiting_correlation_id = None
                     else:
-                        context["awaiting_correlation_id"] = wait_spec.correlation_id
+                        context.awaiting_correlation_id = wait_spec.correlation_id
                     if wait_spec.until is None:
-                        context.pop("awaiting_until", None)
+                        context.awaiting_until = None
                         saga.deadline_at = None
                     else:
                         until = datetime.now(UTC) + wait_spec.until
-                        context["awaiting_until"] = until.isoformat()
+                        context.awaiting_until = until.isoformat()
                         saga.deadline_at = until
 
                     saga.status = SagaStatus.SUSPENDED
                     saga.last_error = None
-                    context.pop("latest_event", None)
-                    context.pop("latest_event_meta", None)
+                    context.latest_event = None
+                    context.latest_event_meta = {}
                     saga.step_execution_token = uuid.uuid4()
                     return False
 
@@ -912,17 +912,17 @@ class SagaEngine(Generic[ModelT]):
                             error=None,
                         )
                     )
-                    outputs = context.setdefault("step_outputs", {})
+                    outputs = context.step_outputs
                     outputs[step_def.step_id] = self._serialize_value(step_output)
-                    context.pop("latest_event", None)
-                    context.pop("latest_event_meta", None)
+                    context.latest_event = None
+                    context.latest_event_meta = {}
                     saga.current_step_index += 1
                     saga.retry_counter = 0
                     saga.deadline_at = None
                     saga.last_error = None
                     saga.step_execution_token = uuid.uuid4()
 
-                    saga_name = saga.context["saga_name"]
+                    saga_name = saga.context.saga_name
                     definition = self._registry[saga_name]
                     if saga.current_step_index >= len(definition.steps):
                         saga.status = SagaStatus.COMPLETED
@@ -957,7 +957,7 @@ class SagaEngine(Generic[ModelT]):
                     saga.step_execution_token = uuid.uuid4()
                     return False
 
-                saga_name = context["saga_name"]
+                saga_name = context.saga_name
                 definition = self._registry[saga_name]
                 if definition.compensate_on_failure and saga.current_step_index > 0:
                     saga.status = SagaStatus.COMPENSATING
@@ -1018,7 +1018,7 @@ class SagaEngine(Generic[ModelT]):
                 if saga.status != SagaStatus.COMPENSATING:
                     return None
 
-                saga_name = saga.context["saga_name"]
+                saga_name = saga.context.saga_name
                 definition = self._registry[saga_name]
                 if saga.current_step_index <= 0:
                     return None
@@ -1093,16 +1093,16 @@ class SagaEngine(Generic[ModelT]):
                             error=None,
                         )
                     )
-                    context["awaiting_event_types"] = (
+                    context.awaiting_event_types = (
                         list(wait_spec.event_types) if wait_spec.event_types else []
                     )
-                    context["awaiting_event_type"] = (
+                    context.awaiting_event_type = (
                         wait_spec.event_types[0] if wait_spec.event_types else None
                     )
-                    context["awaiting_correlation_id"] = wait_spec.correlation_id
+                    context.awaiting_correlation_id = wait_spec.correlation_id
                     if wait_spec.until:
                         until = datetime.now(UTC) + wait_spec.until
-                        context["awaiting_until"] = until.isoformat()
+                        context.awaiting_until = until.isoformat()
                         saga.deadline_at = until
                     else:
                         saga.deadline_at = None
@@ -1141,7 +1141,7 @@ class SagaEngine(Generic[ModelT]):
 
                     saga.status = SagaStatus.FAILED
                     saga.deadline_at = None
-                    definition = self._registry[saga.context["saga_name"]]
+                    definition = self._registry[saga.context.saga_name]
                     await self._handle_terminal_state(session, saga, definition)
                     return False
 
@@ -1166,7 +1166,7 @@ class SagaEngine(Generic[ModelT]):
                     saga.status = SagaStatus.COMPENSATED
                     saga.last_error = "Compensation completed successfully"
                     saga.deadline_at = None
-                    definition = self._registry[saga.context["saga_name"]]
+                    definition = self._registry[saga.context.saga_name]
                     await self._handle_terminal_state(session, saga, definition)
                     return False
 
@@ -1260,9 +1260,7 @@ class SagaEngine(Generic[ModelT]):
         context: SagaContext = saga.context
 
         if step_def.depends_on is not None:
-            dep_payload = context.get("step_outputs", {}).get(
-                step_def.depends_on.step_id
-            )
+            dep_payload = context.step_outputs.get(step_def.depends_on.step_id)
             if dep_payload is None:
                 raise SagaStateError(
                     f"Missing dependency output for step '{step_def.depends_on.step_id}'"
@@ -1273,11 +1271,11 @@ class SagaEngine(Generic[ModelT]):
             mapped = step_def.input_map(
                 InputContext(
                     saga_id=saga.id,
-                    initial_data=context.get("initial_data"),
+                    initial_data=context.initial_data,
                     context=context,
-                    step_outputs=context.get("step_outputs", {}),
-                    latest_event=context.get("latest_event"),
-                    events=context.get("events"),
+                    step_outputs=context.step_outputs,
+                    latest_event=context.latest_event,
+                    events=context.events,
                 )
             )
 
@@ -1343,7 +1341,7 @@ class SagaEngine(Generic[ModelT]):
         event: NotifyEvent | None,
         result: NotifyResult,
     ) -> None:
-        inbox = saga.context.setdefault("notify_inbox", [])
+        inbox = saga.context.notify_inbox
         inbox.append(
             {
                 "timestamp": datetime.now(UTC).isoformat(),

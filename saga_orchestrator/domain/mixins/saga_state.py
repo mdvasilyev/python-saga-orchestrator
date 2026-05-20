@@ -5,11 +5,12 @@ from datetime import datetime
 
 from sqlalchemy import JSON, DateTime, Enum, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
-from sqlalchemy.ext.mutable import MutableDict, MutableList
+from sqlalchemy.ext.mutable import MutableList
 from sqlalchemy.orm import Mapped, declarative_mixin, mapped_column
 
 from ..models.context import SagaContext, SagaStepHistoryEntry
 from ..models.enums import SagaStatus
+from .types import MutableModel
 
 
 def _json_type() -> JSON:
@@ -34,7 +35,8 @@ class SagaStateMixin:
         nullable=True,
     )
     context: Mapped[SagaContext] = mapped_column(
-        MutableDict.as_mutable(_json_type()), default=dict
+        MutableModel(SagaContext),
+        nullable=False,
     )
     step_history: Mapped[list[SagaStepHistoryEntry]] = mapped_column(
         MutableList.as_mutable(_json_type()), default=list

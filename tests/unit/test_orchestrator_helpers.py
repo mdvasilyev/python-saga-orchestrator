@@ -8,6 +8,7 @@ from saga_orchestrator import SagaStateMixin
 from saga_orchestrator.core import SagaBuilder
 from saga_orchestrator.core.engine import SagaEngine
 from saga_orchestrator.domain.models import BaseStep, InputContext
+from saga_orchestrator.domain.models.context import SagaContext
 
 
 class RootInput(BaseModel):
@@ -28,7 +29,7 @@ class RootStep(BaseStep[RootInput, RootOutput]):
 class MockSaga(SagaStateMixin):
     """A mock saga object that satisfies the interface needed by _build_step_input."""
 
-    def __init__(self, id: uuid.UUID, context: dict):
+    def __init__(self, id: uuid.UUID, context: SagaContext):
         self.id = id
         self.context = context
 
@@ -52,12 +53,14 @@ def test_build_step_input_exposes_latest_event() -> None:
     test_saga_id = uuid.uuid4()
     mock_saga_instance = MockSaga(
         id=test_saga_id,
-        context={
-            "initial_data": {"value": 7},
-            "step_outputs": {},
-            "latest_event": {"value": 99},
-            "events": [{"value": 99}],
-        },
+        context=SagaContext(
+            saga_id=test_saga_id,
+            saga_name="test_saga",
+            initial_data={"value": 7},
+            step_outputs={},
+            latest_event={"value": 99},
+            events=[{"value": 99}],
+        ),
     )
 
     step_input = engine._build_step_input(

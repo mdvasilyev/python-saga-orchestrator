@@ -632,9 +632,9 @@ async def test_await_event_configures_wait_contract(session_maker):
     assert state_after.step_execution_token == new_token
     assert state_after.step_execution_token != state_before.step_execution_token
     assert state_after.deadline_at is None
-    assert state_after.context["awaiting_event_type"] == "model.approved"
-    assert state_after.context["awaiting_correlation_id"] == "corr-await"
-    assert state_after.context["awaiting_until"] == "2999-01-01T00:00:00+00:00"
+    assert state_after.context.awaiting_event_type == "model.approved"
+    assert state_after.context.awaiting_correlation_id == "corr-await"
+    assert state_after.context.awaiting_until == "2999-01-01T00:00:00+00:00"
 
 
 @pytest.mark.asyncio
@@ -800,7 +800,7 @@ async def test_inbox_ingest_and_run_due_applies_event(session_maker):
         step=InboxWaitStep(),
         input_map=lambda ctx: InboxWaitInput(
             value=ctx.initial_data["value"],
-            event_type=(ctx.context.get("latest_event_meta") or {}).get("event_type"),
+            event_type=ctx.context.latest_event_meta.get("event_type"),
         ),
     )
 
@@ -1209,7 +1209,7 @@ async def test_three_step_http_and_queue_style_flow(session_maker):
             order_id=ctx.initial_data["order_id"],
             gateway_url=ctx.step_outputs["step_0"]["gateway_url"],
             correlation_id=f"reserve-{ctx.initial_data['order_id']}",
-            event_type=(ctx.context.get("latest_event_meta") or {}).get("event_type"),
+            event_type=ctx.context.latest_event_meta.get("event_type"),
             event_payload=ctx.latest_event,
         ),
     )
@@ -1218,7 +1218,7 @@ async def test_three_step_http_and_queue_style_flow(session_maker):
         input_map=lambda ctx: ActivateQueueInput(
             reservation_id=ctx.step_outputs["step_1"]["reservation_id"],
             correlation_id=f"activate-{ctx.step_outputs['step_1']['reservation_id']}",
-            event_type=(ctx.context.get("latest_event_meta") or {}).get("event_type"),
+            event_type=ctx.context.latest_event_meta.get("event_type"),
             event_payload=ctx.latest_event,
         ),
     )
@@ -1265,7 +1265,7 @@ async def test_three_step_http_and_queue_style_flow(session_maker):
     state_after_start = await admin.get_saga(saga_id)
     assert state_after_start.status == SagaStatus.SUSPENDED
     assert state_after_start.current_step_index == 1
-    assert state_after_start.context["awaiting_event_type"] == "reserve.success"
+    assert state_after_start.context.awaiting_event_type == "reserve.success"
 
     processed = await dispatcher.run_once(limit=10)
     assert processed == 1
@@ -1289,7 +1289,7 @@ async def test_three_step_http_and_queue_style_flow(session_maker):
     state_after_reserve = await admin.get_saga(saga_id)
     assert state_after_reserve.status == SagaStatus.SUSPENDED
     assert state_after_reserve.current_step_index == 2
-    assert state_after_reserve.context["awaiting_event_type"] == "activate.success"
+    assert state_after_reserve.context.awaiting_event_type == "activate.success"
 
     processed = await dispatcher.run_once(limit=10)
     assert processed == 1
@@ -1634,11 +1634,11 @@ def create_start_event(ctx: InputContext) -> list[OutboxEvent]:
 
 
 def create_completed_event(ctx: SagaContext) -> list[OutboxEvent]:
-    final_value = ctx["step_outputs"]["step_0"]["value"]
+    final_value = ctx.step_outputs["step_0"]["value"]
     payload = SagaTerminalEvent(
-        saga_id=uuid.UUID(ctx["saga_id"]),
+        saga_id=ctx.saga_id,
         final_status="COMPLETED",
-        order_id=ctx["initial_data"]["order_id"],
+        order_id=ctx.initial_data["order_id"],
         final_value=final_value,
     )
     return [
@@ -1651,9 +1651,9 @@ def create_completed_event(ctx: SagaContext) -> list[OutboxEvent]:
 
 def create_compensated_event(ctx: SagaContext) -> list[OutboxEvent]:
     payload = SagaTerminalEvent(
-        saga_id=uuid.UUID(ctx["saga_id"]),
+        saga_id=ctx.saga_id,
         final_status="COMPENSATED",
-        order_id=ctx["initial_data"]["order_id"],
+        order_id=ctx.initial_data["order_id"],
     )
     return [
         OutboxEvent(
@@ -1665,9 +1665,9 @@ def create_compensated_event(ctx: SagaContext) -> list[OutboxEvent]:
 
 def create_failed_event(ctx: SagaContext, last_error: str | None) -> list[OutboxEvent]:
     payload = SagaTerminalEvent(
-        saga_id=uuid.UUID(ctx["saga_id"]),
+        saga_id=ctx.saga_id,
         final_status="FAILED",
-        order_id=ctx["initial_data"]["order_id"],
+        order_id=ctx.initial_data["order_id"],
         last_error=last_error,
     )
     return [

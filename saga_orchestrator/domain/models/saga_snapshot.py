@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
+from .context import SagaContext
 from .enums import SagaStatus
 
 
@@ -32,5 +33,5 @@ class SagaAdminSnapshot:
     retry_counter: int
     deadline_at: datetime | None
     last_error: str | None
-    context: dict[str, Any]
+    context: SagaContext
     step_history: list[dict[str, Any]]
