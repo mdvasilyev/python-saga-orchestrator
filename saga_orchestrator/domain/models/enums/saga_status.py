@@ -8,7 +8,8 @@ class SagaStatus(StrEnum):
     COMPENSATING = "COMPENSATING"
     COMPLETED = "COMPLETED"
     COMPENSATING_SUSPENDED = "COMPENSATING_SUSPENDED"
+    COMPENSATED = "COMPENSATED"
 
     @property
     def is_terminal(self) -> bool:
-        return self in {self.FAILED, self.COMPLETED}
+        return self in {self.FAILED, self.COMPLETED, self.COMPENSATED}

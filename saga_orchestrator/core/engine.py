@@ -949,7 +949,7 @@ class SagaEngine(Generic[ModelT]):
                 saga_name = saga.context["saga_name"]
                 definition = self._registry[saga_name]
                 if saga.current_step_index <= 0:
-                    saga.status = SagaStatus.FAILED
+                    saga.status = SagaStatus.COMPENSATED
                     saga.last_error = "Compensation completed"
                     saga.deadline_at = None
                     return None
@@ -1092,7 +1092,7 @@ class SagaEngine(Generic[ModelT]):
                 saga.step_execution_token = uuid.uuid4()
 
                 if saga.current_step_index <= 0:
-                    saga.status = SagaStatus.FAILED
+                    saga.status = SagaStatus.COMPENSATED
                     saga.last_error = "Compensation completed successfully"
                     saga.deadline_at = None
                     return False

@@ -269,6 +269,9 @@ class FlakyCompensateStep(BaseStep[StartInput, StartOutput]):
         self.compensation_completed = True
 
 
+# ... (все остальные классы шагов остаются без изменений)
+
+
 @pytest.mark.asyncio
 async def test_start_completes_saga(session_maker):
     builder = SagaBuilder()
@@ -543,7 +546,7 @@ async def test_run_due_recovers_expired_compensation(session_maker):
     assert resumed == 1
 
     state_after = await admin.get_saga(recovered_saga_id)
-    assert state_after.status == SagaStatus.FAILED
+    assert state_after.status == SagaStatus.COMPENSATED
     assert reserving.compensation_calls == 2
 
 
@@ -885,7 +888,7 @@ async def test_admin_retry_rejects_failed_saga_after_compensation(session_maker)
         aggregation_id="agg-admin-retry",
     )
     state = await admin.get_saga(saga_id)
-    assert state.status == SagaStatus.FAILED
+    assert state.status == SagaStatus.COMPENSATED
     assert any(entry["phase"] == "compensate" for entry in state.step_history)
 
     with pytest.raises(SagaStateError):
@@ -992,7 +995,7 @@ async def test_admin_compensate_rolls_back_suspended_saga(session_maker):
     await admin.compensate_step(saga_id)
 
     state_after = await admin.get_saga(saga_id)
-    assert state_after.status == SagaStatus.FAILED
+    assert state_after.status == SagaStatus.COMPENSATED
     assert reserving.compensated is True
     assert any(entry["phase"] == "compensate" for entry in state_after.step_history)
 
@@ -1370,7 +1373,7 @@ async def test_compensation_can_wait_for_event_and_resume_on_notify(session_make
     assert result == NotifyResult.ACCEPTED
 
     final_state = await admin.get_saga(saga_id)
-    assert final_state.status == SagaStatus.FAILED
+    assert final_state.status == SagaStatus.COMPENSATED
     assert compensating_step.compensation_calls == 2
     assert compensating_step.compensation_completed
 
@@ -1419,7 +1422,7 @@ async def test_compensation_can_wait_and_resume_on_run_due(session_maker):
     assert resumed == 1
 
     final_state = await admin.get_saga(saga_id)
-    assert final_state.status == SagaStatus.FAILED
+    assert final_state.status == SagaStatus.COMPENSATED
     assert compensating_step.compensation_calls == 2
     assert compensating_step.compensation_completed
 
@@ -1473,6 +1476,133 @@ async def test_compensation_error_retries_via_compensating_suspended(session_mak
     assert resumed == 1
 
     final_state = await admin.get_saga(saga_id)
-    assert final_state.status == SagaStatus.FAILED
+    assert final_state.status == SagaStatus.COMPENSATED
     assert compensating_step.compensation_calls == 2
     assert compensating_step.compensation_completed
+
+
+class CompensatingStep(BaseStep[StartInput, StartOutput]):
+    """Простой шаг с рабочей компенсацией."""
+
+    def __init__(self) -> None:
+        self.compensated = False
+
+    async def execute(self, inp: StartInput) -> StartOutput:
+        return StartOutput(value=inp.value + 1)
+
+    async def compensate(self, inp: StartInput, out: StartOutput) -> None:
+        self.compensated = True
+
+
+class IrreversibleStep(BaseStep[StartInput, StartOutput]):
+    """Шаг, чья компенсация всегда падает."""
+
+    async def execute(self, inp: StartInput) -> StartOutput:
+        return StartOutput(value=inp.value + 1)
+
+    async def compensate(self, inp: StartInput, out: StartOutput) -> None:
+        raise RuntimeError("Cannot be compensated")
+
+
+@pytest.mark.asyncio
+async def test_saga_reaches_compensated_status_on_successful_rollback(session_maker):
+    """
+    Проверяет, что сага переходит в статус COMPENSATED, когда шаг падает
+    и все предыдущие шаги успешно компенсируются.
+    """
+    compensating_step = CompensatingStep()
+    failing_step = FailingStep()
+
+    builder = SagaBuilder(compensate_on_failure=True)
+    ref = builder.add_step(
+        step=compensating_step,
+        input_map=lambda ctx: StartInput(value=ctx.initial_data["value"]),
+    )
+    builder.add_step(
+        step=failing_step,
+        depends_on=ref,
+        input_map=lambda out: NextInput(value=out.value),
+        retry_policy=ExponentialRetry(max_attempts=0, base_delay=timedelta(seconds=0)),
+    )
+
+    orchestrator = SagaOrchestrator[IntegrationSagaState](
+        model_class=IntegrationSagaState,
+        session_maker=session_maker,
+    )
+    admin = SagaAdmin[IntegrationSagaState](engine=orchestrator.engine)
+    orchestrator.register("successful-compensation", builder.build())
+
+    saga_id = await orchestrator.start(
+        saga_name="successful-compensation",
+        initial_data={"value": 1},
+        aggregation_id="agg-successful-comp",
+    )
+
+    state = await admin.get_saga(saga_id)
+
+    assert state.status == SagaStatus.COMPENSATED
+    assert compensating_step.compensated is True
+
+    compensate_history_entry = next(
+        (
+            entry
+            for entry in state.step_history
+            if entry["phase"] == SagaStepPhase.COMPENSATE
+        ),
+        None,
+    )
+    assert compensate_history_entry is not None
+    assert compensate_history_entry["status"] == SagaStepStatus.SUCCESS
+    assert state.last_error == "Compensation completed successfully"
+
+
+@pytest.mark.asyncio
+async def test_saga_reaches_failed_status_when_compensation_fails(session_maker):
+    """
+    Проверяет, что сага переходит в статус FAILED, когда сама компенсация падает
+    и не может быть повторно выполнена.
+    """
+    irreversible_step = IrreversibleStep()
+    failing_step = FailingStep()
+
+    builder = SagaBuilder(compensate_on_failure=True)
+    ref = builder.add_step(
+        step=irreversible_step,
+        input_map=lambda ctx: StartInput(value=ctx.initial_data["value"]),
+        retry_policy=ExponentialRetry(max_attempts=0, base_delay=timedelta(seconds=0)),
+    )
+    builder.add_step(
+        step=failing_step,
+        depends_on=ref,
+        input_map=lambda out: NextInput(value=out.value),
+        retry_policy=ExponentialRetry(max_attempts=0, base_delay=timedelta(seconds=0)),
+    )
+
+    orchestrator = SagaOrchestrator[IntegrationSagaState](
+        model_class=IntegrationSagaState,
+        session_maker=session_maker,
+    )
+    admin = SagaAdmin[IntegrationSagaState](engine=orchestrator.engine)
+    orchestrator.register("failed-compensation", builder.build())
+
+    saga_id = await orchestrator.start(
+        saga_name="failed-compensation",
+        initial_data={"value": 1},
+        aggregation_id="agg-failed-comp",
+    )
+
+    state = await admin.get_saga(saga_id)
+    assert state.status == SagaStatus.FAILED
+    assert "Compensation failed for step" in (state.last_error or "")
+    assert "Cannot be compensated" in (state.last_error or "")
+
+    compensate_history_entry = next(
+        (
+            entry
+            for entry in state.step_history
+            if entry["phase"] == SagaStepPhase.COMPENSATE
+        ),
+        None,
+    )
+    assert compensate_history_entry is not None
+    assert compensate_history_entry["status"] == SagaStepStatus.ERROR
