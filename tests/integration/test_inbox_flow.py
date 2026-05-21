@@ -7,7 +7,11 @@ from saga_orchestrator.core.orchestrator import SagaOrchestrator
 from saga_orchestrator.domain.models.enums import SagaStatus
 from saga_orchestrator.domain.models.notify import NotifyEvent
 from tests.integration.helpers import InboxWaitInput, InboxWaitStep
-from tests.integration.models import IntegrationInboxMessage, IntegrationSagaState
+from tests.integration.models import (
+    IntegrationInboxMessage,
+    IntegrationSagaHistory,
+    IntegrationSagaState,
+)
 
 
 @pytest.mark.asyncio
@@ -21,12 +25,15 @@ async def test_inbox_ingest_and_run_due_applies_event(session_maker):
         ),
     )
 
-    orchestrator = SagaOrchestrator[IntegrationSagaState](
+    orchestrator = SagaOrchestrator[IntegrationSagaState, IntegrationSagaHistory](
         model_class=IntegrationSagaState,
+        history_model_class=IntegrationSagaHistory,
         inbox_model_class=IntegrationInboxMessage,
         session_maker=session_maker,
     )
-    admin = SagaAdmin[IntegrationSagaState](engine=orchestrator.engine)
+    admin = SagaAdmin[IntegrationSagaState, IntegrationSagaHistory](
+        engine=orchestrator.engine
+    )
     orchestrator.register("inbox-flow", builder.build())
 
     saga_id = await orchestrator.start(

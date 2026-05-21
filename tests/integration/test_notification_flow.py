@@ -15,7 +15,7 @@ from saga_orchestrator.domain.models.notify import (
     NotifyResult,
 )
 from tests.integration.helpers import AlwaysFailStep, StartInput
-from tests.integration.models import IntegrationSagaState
+from tests.integration.models import IntegrationSagaHistory, IntegrationSagaState
 
 
 @pytest.mark.asyncio
@@ -29,12 +29,15 @@ async def test_notify_rejects_stale_token(session_maker):
         ),
     )
 
-    orchestrator = SagaOrchestrator[IntegrationSagaState](
+    orchestrator = SagaOrchestrator[IntegrationSagaState, IntegrationSagaHistory](
         model_class=IntegrationSagaState,
+        history_model_class=IntegrationSagaHistory,
         session_maker=session_maker,
     )
     orchestrator.register("notify", builder.build())
-    admin = SagaAdmin[IntegrationSagaState](engine=orchestrator.engine)
+    admin = SagaAdmin[IntegrationSagaState, IntegrationSagaHistory](
+        engine=orchestrator.engine
+    )
 
     saga_id = await orchestrator.start(
         saga_name="notify",
@@ -63,11 +66,14 @@ async def test_await_event_configures_wait_contract(session_maker):
         ),
     )
 
-    orchestrator = SagaOrchestrator[IntegrationSagaState](
+    orchestrator = SagaOrchestrator[IntegrationSagaState, IntegrationSagaHistory](
         model_class=IntegrationSagaState,
+        history_model_class=IntegrationSagaHistory,
         session_maker=session_maker,
     )
-    admin = SagaAdmin[IntegrationSagaState](engine=orchestrator.engine)
+    admin = SagaAdmin[IntegrationSagaState, IntegrationSagaHistory](
+        engine=orchestrator.engine
+    )
     orchestrator.register("notify-await", builder.build())
 
     saga_id = await orchestrator.start(
@@ -109,11 +115,14 @@ async def test_notify_detailed_rejects_duplicate_event(session_maker):
         ),
     )
 
-    orchestrator = SagaOrchestrator[IntegrationSagaState](
+    orchestrator = SagaOrchestrator[IntegrationSagaState, IntegrationSagaHistory](
         model_class=IntegrationSagaState,
+        history_model_class=IntegrationSagaHistory,
         session_maker=session_maker,
     )
-    admin = SagaAdmin[IntegrationSagaState](engine=orchestrator.engine)
+    admin = SagaAdmin[IntegrationSagaState, IntegrationSagaHistory](
+        engine=orchestrator.engine
+    )
     orchestrator.register("notify-duplicate", builder.build())
 
     saga_id = await orchestrator.start(
@@ -155,11 +164,14 @@ async def test_notify_detailed_enforces_expected_event_fields(session_maker):
         ),
     )
 
-    orchestrator = SagaOrchestrator[IntegrationSagaState](
+    orchestrator = SagaOrchestrator[IntegrationSagaState, IntegrationSagaHistory](
         model_class=IntegrationSagaState,
+        history_model_class=IntegrationSagaHistory,
         session_maker=session_maker,
     )
-    admin = SagaAdmin[IntegrationSagaState](engine=orchestrator.engine)
+    admin = SagaAdmin[IntegrationSagaState, IntegrationSagaHistory](
+        engine=orchestrator.engine
+    )
     orchestrator.register("notify-expect", builder.build())
 
     saga_id = await orchestrator.start(
@@ -215,11 +227,14 @@ async def test_notify_detailed_rejects_expired_waiting_window(session_maker):
         ),
     )
 
-    orchestrator = SagaOrchestrator[IntegrationSagaState](
+    orchestrator = SagaOrchestrator[IntegrationSagaState, IntegrationSagaHistory](
         model_class=IntegrationSagaState,
+        history_model_class=IntegrationSagaHistory,
         session_maker=session_maker,
     )
-    admin = SagaAdmin[IntegrationSagaState](engine=orchestrator.engine)
+    admin = SagaAdmin[IntegrationSagaState, IntegrationSagaHistory](
+        engine=orchestrator.engine
+    )
     orchestrator.register("notify-expired", builder.build())
 
     saga_id = await orchestrator.start(

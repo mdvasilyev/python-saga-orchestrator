@@ -6,6 +6,7 @@ from uuid import UUID
 
 from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from ..domain.exceptions import ActiveSagaAlreadyExistsError, SagaNotFoundError
 from ..domain.mixins import SagaStateMixin
@@ -28,9 +29,15 @@ class SagaRepository(Generic[ModelT]):
         """Initialize the repository for one saga state model."""
         self.model_class = model_class
 
+    def _base_query(self) -> Select[tuple[ModelT]]:
+        """Return a base select query with eager loading for history."""
+        return select(self.model_class).options(
+            selectinload(self.model_class.step_history)
+        )
+
     async def get(self, session: AsyncSession, saga_id: UUID) -> ModelT:
         """Return one saga row by id."""
-        stmt: Select[tuple[ModelT]] = select(self.model_class).where(
+        stmt: Select[tuple[ModelT]] = self._base_query().where(
             self.model_class.id == saga_id
         )
         result = await session.execute(stmt)
@@ -42,7 +49,7 @@ class SagaRepository(Generic[ModelT]):
     async def get_for_update(self, session: AsyncSession, saga_id: UUID) -> ModelT:
         """Return one saga row by id and lock it for update."""
         stmt: Select[tuple[ModelT]] = (
-            select(self.model_class)
+            self._base_query()
             .where(self.model_class.id == saga_id)
             .with_for_update(nowait=False)
         )
@@ -59,7 +66,7 @@ class SagaRepository(Generic[ModelT]):
     ) -> ModelT | None:
         """Return an active saga for the aggregation id and lock it for update."""
         stmt: Select[tuple[ModelT]] = (
-            select(self.model_class)
+            self._base_query()
             .where(
                 self.model_class.aggregation_id == aggregation_id,
                 self.model_class.status.in_(self.ACTIVE_STATUSES),
@@ -92,43 +99,32 @@ class SagaRepository(Generic[ModelT]):
         return saga
 
     async def due_suspended(
-        self,
-        session: AsyncSession,
-        now: datetime,
-        limit: int,
+        self, session: AsyncSession, now: datetime, limit: int
     ) -> list[ModelT]:
-        """Return suspended sagas whose deadlines are due."""
         return await self._due_by_status(
-            session=session,
-            status=SagaStatus.SUSPENDED,
-            now=now,
-            limit=limit,
+            session=session, status=SagaStatus.SUSPENDED, now=now, limit=limit
         )
 
     async def due_running(
-        self,
-        session: AsyncSession,
-        now: datetime,
-        limit: int,
+        self, session: AsyncSession, now: datetime, limit: int
     ) -> list[ModelT]:
-        """Return running sagas whose deadlines are due."""
         return await self._due_by_status(
-            session=session,
-            status=SagaStatus.RUNNING,
-            now=now,
-            limit=limit,
+            session=session, status=SagaStatus.RUNNING, now=now, limit=limit
         )
 
     async def due_compensating(
-        self,
-        session: AsyncSession,
-        now: datetime,
-        limit: int,
+        self, session: AsyncSession, now: datetime, limit: int
     ) -> list[ModelT]:
-        """Return compensating sagas whose deadlines are due."""
+        return await self._due_by_status(
+            session=session, status=SagaStatus.COMPENSATING, now=now, limit=limit
+        )
+
+    async def due_compensating_suspended(
+        self, session: AsyncSession, *, now: datetime, limit: int
+    ) -> list[ModelT]:
         return await self._due_by_status(
             session=session,
-            status=SagaStatus.COMPENSATING,
+            status=SagaStatus.COMPENSATING_SUSPENDED,
             now=now,
             limit=limit,
         )
@@ -165,18 +161,3 @@ class SagaRepository(Generic[ModelT]):
         """Return whether the current dialect supports ``SKIP LOCKED``."""
         bind = session.get_bind()
         return bind is not None and bind.dialect.name == "postgresql"
-
-    async def due_compensating_suspended(
-        self,
-        session: AsyncSession,
-        *,
-        now: datetime,
-        limit: int,
-    ) -> list[ModelT]:
-        """Find due sagas in COMPENSATING_SUSPENDED status."""
-        return await self._due_by_status(
-            session=session,
-            status=SagaStatus.COMPENSATING_SUSPENDED,
-            now=now,
-            limit=limit,
-        )

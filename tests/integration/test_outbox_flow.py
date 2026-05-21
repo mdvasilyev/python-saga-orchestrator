@@ -9,7 +9,11 @@ from saga_orchestrator import SagaBuilder
 from saga_orchestrator.core.orchestrator import SagaOrchestrator
 from saga_orchestrator.outbox import OutboxDispatcher, OutboxEvent, OutboxStatus
 from tests.integration.helpers import AddOneStep, StartInput
-from tests.integration.models import IntegrationOutboxMessage, IntegrationSagaState
+from tests.integration.models import (
+    IntegrationOutboxMessage,
+    IntegrationSagaHistory,
+    IntegrationSagaState,
+)
 
 
 @pytest.mark.asyncio
@@ -27,8 +31,9 @@ async def test_outbox_message_created_on_successful_step(session_maker):
         ],
     )
 
-    orchestrator = SagaOrchestrator[IntegrationSagaState](
+    orchestrator = SagaOrchestrator[IntegrationSagaState, IntegrationSagaHistory](
         model_class=IntegrationSagaState,
+        history_model_class=IntegrationSagaHistory,
         outbox_model_class=IntegrationOutboxMessage,
         session_maker=session_maker,
     )
@@ -86,8 +91,9 @@ async def test_outbox_dispatcher_marks_message_sent(session_maker):
         ],
     )
 
-    orchestrator = SagaOrchestrator[IntegrationSagaState](
+    orchestrator = SagaOrchestrator[IntegrationSagaState, IntegrationSagaHistory](
         model_class=IntegrationSagaState,
+        history_model_class=IntegrationSagaHistory,
         outbox_model_class=IntegrationOutboxMessage,
         session_maker=session_maker,
     )
@@ -145,8 +151,9 @@ async def test_outbox_dispatcher_marks_message_failed_and_schedules_retry(
         ],
     )
 
-    orchestrator = SagaOrchestrator[IntegrationSagaState](
+    orchestrator = SagaOrchestrator[IntegrationSagaState, IntegrationSagaHistory](
         model_class=IntegrationSagaState,
+        history_model_class=IntegrationSagaHistory,
         outbox_model_class=IntegrationOutboxMessage,
         session_maker=session_maker,
     )

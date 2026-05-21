@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from saga_orchestrator import SagaStateMixin
 from saga_orchestrator.core import SagaBuilder
 from saga_orchestrator.core.engine import SagaEngine
+from saga_orchestrator.domain.mixins.saga_step_histrory import SagaStepHistoryMixin
 from saga_orchestrator.domain.models import BaseStep, InputContext
 from saga_orchestrator.domain.models.context import SagaContext
 
@@ -34,6 +35,10 @@ class MockSaga(SagaStateMixin):
         self.context = context
 
 
+class MockHistoryStep(SagaStepHistoryMixin):
+    pass
+
+
 def test_build_step_input_exposes_latest_event() -> None:
     builder = SagaBuilder()
 
@@ -48,7 +53,9 @@ def test_build_step_input_exposes_latest_event() -> None:
     builder.add_step(step=RootStep(), input_map=root_map, timeout=timedelta(seconds=5))
     definition = builder.build()
 
-    engine = SagaEngine(model_class=MockSaga, session_maker=Mock())
+    engine = SagaEngine(
+        model_class=MockSaga, history_model_class=MockHistoryStep, session_maker=Mock()
+    )
 
     test_saga_id = uuid.uuid4()
     mock_saga_instance = MockSaga(
@@ -59,7 +66,7 @@ def test_build_step_input_exposes_latest_event() -> None:
             initial_data={"value": 7},
             step_outputs={},
             latest_event={"value": 99},
-            events=[{"value": 99}],
+            events=({"value": 99},),
         ),
     )
 

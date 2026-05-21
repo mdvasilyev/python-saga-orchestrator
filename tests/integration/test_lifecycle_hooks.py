@@ -21,7 +21,11 @@ from tests.integration.helpers import (
     create_failed_event,
     create_start_event,
 )
-from tests.integration.models import IntegrationOutboxMessage, IntegrationSagaState
+from tests.integration.models import (
+    IntegrationOutboxMessage,
+    IntegrationSagaHistory,
+    IntegrationSagaState,
+)
 
 
 @pytest.mark.asyncio
@@ -33,8 +37,9 @@ async def test_on_start_hook_creates_outbox_event(session_maker):
         input_map=lambda ctx: StartInput(value=ctx.initial_data["value"]),
     )
 
-    orchestrator = SagaOrchestrator[IntegrationSagaState](
+    orchestrator = SagaOrchestrator[IntegrationSagaState, IntegrationSagaHistory](
         model_class=IntegrationSagaState,
+        history_model_class=IntegrationSagaHistory,
         outbox_model_class=IntegrationOutboxMessage,
         session_maker=session_maker,
     )
@@ -67,8 +72,9 @@ async def test_on_completed_hook_creates_outbox_event(session_maker):
         input_map=lambda ctx: StartInput(value=ctx.initial_data["value"]),
     )
 
-    orchestrator = SagaOrchestrator[IntegrationSagaState](
+    orchestrator = SagaOrchestrator[IntegrationSagaState, IntegrationSagaHistory](
         model_class=IntegrationSagaState,
+        history_model_class=IntegrationSagaHistory,
         outbox_model_class=IntegrationOutboxMessage,
         session_maker=session_maker,
     )
@@ -108,8 +114,9 @@ async def test_on_compensated_hook_creates_outbox_event(session_maker):
         retry_policy=ExponentialRetry(max_attempts=0, base_delay=timedelta(seconds=0)),
     )
 
-    orchestrator = SagaOrchestrator[IntegrationSagaState](
+    orchestrator = SagaOrchestrator[IntegrationSagaState, IntegrationSagaHistory](
         model_class=IntegrationSagaState,
+        history_model_class=IntegrationSagaHistory,
         outbox_model_class=IntegrationOutboxMessage,
         session_maker=session_maker,
     )
@@ -149,8 +156,9 @@ async def test_on_failed_hook_creates_outbox_event(session_maker):
         retry_policy=ExponentialRetry(max_attempts=0, base_delay=timedelta(seconds=0)),
     )
 
-    orchestrator = SagaOrchestrator[IntegrationSagaState](
+    orchestrator = SagaOrchestrator[IntegrationSagaState, IntegrationSagaHistory](
         model_class=IntegrationSagaState,
+        history_model_class=IntegrationSagaHistory,
         outbox_model_class=IntegrationOutboxMessage,
         session_maker=session_maker,
     )
@@ -184,8 +192,9 @@ async def test_hook_raises_error_if_outbox_is_not_configured(session_maker):
         input_map=lambda ctx: StartInput(value=ctx.initial_data["value"]),
     )
 
-    orchestrator = SagaOrchestrator[IntegrationSagaState](
+    orchestrator = SagaOrchestrator[IntegrationSagaState, IntegrationSagaHistory](
         model_class=IntegrationSagaState,
+        history_model_class=IntegrationSagaHistory,
         session_maker=session_maker,
     )
     orchestrator.register("hook-no-outbox", builder.build())

@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ..domain.exceptions import SagaDefinitionError, SagaNotFoundError, SagaStateError
 from ..domain.mixins import SagaStateMixin
+from ..domain.mixins.saga_step_histrory import SagaStepHistoryMixin
 from ..domain.models import (
     AwaitingEvent,
     InputContext,
@@ -38,15 +39,17 @@ from ..outbox.serialization import JsonOutboxSerializer, OutboxSerializer
 from .repository import SagaRepository
 
 ModelT = TypeVar("ModelT", bound=SagaStateMixin)
+HistoryModelT = TypeVar("HistoryModelT", bound=SagaStepHistoryMixin)
 
 
-class SagaEngine(Generic[ModelT]):
+class SagaEngine(Generic[ModelT, HistoryModelT]):
     """Execute, resume, recover, and administrate saga instances."""
 
     def __init__(
         self,
         *,
         model_class: type[ModelT],
+        history_model_class: type[HistoryModelT],
         session_maker: async_sessionmaker[AsyncSession],
         inbox_model_class: type[InboxMessageMixin] | None = None,
         inbox_writer: InboxWriter | None = None,
@@ -58,6 +61,7 @@ class SagaEngine(Generic[ModelT]):
     ) -> None:
         """Initialize the engine dependencies and execution lease."""
         self._model_class = model_class
+        self._history_model_class = history_model_class
         self._session_maker = session_maker
         self._execution_lease = execution_lease
         self._repository = SagaRepository(model_class)
@@ -487,7 +491,24 @@ class SagaEngine(Generic[ModelT]):
         """Return the administrative view of one saga."""
         async with self._session_maker() as session:
             async with session.begin():
-                saga = await self._repository.get(session, saga_id)
+                saga: ModelT = await self._repository.get(session, saga_id)
+                history_entries: list[SagaStepHistoryEntry] = [
+                    SagaStepHistoryEntry(
+                        timestamp=entry.timestamp,
+                        phase=entry.phase,
+                        status=entry.status,
+                        step_id=entry.step_id,
+                        step_name=entry.step_name,
+                        attempt=entry.attempt,
+                        token=entry.token,
+                        input=entry.input,
+                        output=entry.output,
+                        error=entry.error,
+                        skipped=entry.skipped,
+                    )
+                    for entry in saga.step_history
+                ]
+
                 return SagaAdminSnapshot(
                     id=saga.id,
                     aggregation_id=saga.aggregation_id,
@@ -500,7 +521,7 @@ class SagaEngine(Generic[ModelT]):
                     deadline_at=saga.deadline_at,
                     last_error=saga.last_error,
                     context=saga.context,
-                    step_history=saga.step_history,
+                    step_history=history_entries,
                 )
 
     async def resume(self, saga_id: UUID) -> None:
@@ -612,7 +633,7 @@ class SagaEngine(Generic[ModelT]):
                 output_model = step_def.output_model.model_validate(output_payload)
                 token = saga.step_execution_token or uuid.uuid4()
 
-                step_history = SagaStepHistoryEntry(
+                step_history = self._history_model_class(
                     timestamp=datetime.now(UTC),
                     phase=SagaStepPhase.EXECUTE,
                     status=SagaStepStatus.SUCCESS,
@@ -1360,9 +1381,9 @@ class SagaEngine(Generic[ModelT]):
         step_input: BaseModel,
         step_output: BaseModel | None,
         error: Exception | None,
-    ) -> SagaStepHistoryEntry:
+    ) -> HistoryModelT:
         """Return one step history record."""
-        return SagaStepHistoryEntry(
+        return self._history_model_class(
             timestamp=datetime.now(UTC),
             phase=phase,
             status=status,
@@ -1375,6 +1396,7 @@ class SagaEngine(Generic[ModelT]):
                 self._serialize_value(step_output) if step_output is not None else None
             ),
             error=repr(error) if error is not None else None,
+            skipped=False,
         )
 
     @staticmethod

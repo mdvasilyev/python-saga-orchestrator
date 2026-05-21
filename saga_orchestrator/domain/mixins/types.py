@@ -72,3 +72,7 @@ def MutableModel(pydantic_model):
             self.changed()
 
     return MutableModel.as_mutable(JsonPydanticField(pydantic_model))
+
+
+def json_type() -> JSON:
+    return JSON().with_variant(JSONB, "postgresql")

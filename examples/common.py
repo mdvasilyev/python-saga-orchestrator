@@ -5,10 +5,17 @@ from datetime import timedelta
 from uuid import UUID
 
 from pydantic import BaseModel
+from sqlalchemy import ForeignKey
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
-from saga_orchestrator import BaseStep, SagaAdmin, SagaOrchestrator, SagaStateMixin
+from saga_orchestrator import (
+    BaseStep,
+    SagaAdmin,
+    SagaOrchestrator,
+    SagaStateMixin,
+    SagaStepHistoryMixin,
+)
 
 DATABASE_URL = os.getenv(
     "TEST_DATABASE_URL",
@@ -20,8 +27,23 @@ class Base(DeclarativeBase):
     pass
 
 
+class DemoSagaHistory(Base, SagaStepHistoryMixin):
+    __tablename__ = "demo_saga_history"
+
+    saga_id: Mapped[UUID] = mapped_column(
+        ForeignKey("demo_saga_state.id", ondelete="CASCADE"),
+        index=True,
+    )
+
+
 class DemoSagaState(Base, SagaStateMixin):
     __tablename__ = "demo_saga_state"
+
+    step_history: Mapped[list[DemoSagaHistory]] = relationship(
+        "DemoSagaHistory",
+        cascade="all, delete-orphan",
+        order_by="DemoSagaHistory.id",
+    )
 
 
 class StartInput(BaseModel):
@@ -97,7 +119,9 @@ async def create_runtime(
     execution_lease: timedelta = timedelta(seconds=5),
     reset_schema: bool = True,
 ) -> tuple[
-    async_sessionmaker, SagaOrchestrator[DemoSagaState], SagaAdmin[DemoSagaState]
+    async_sessionmaker,
+    SagaOrchestrator[DemoSagaState, DemoSagaHistory],
+    SagaAdmin[DemoSagaState, DemoSagaHistory],
 ]:
     engine = create_async_engine(DATABASE_URL, echo=False)
     async with engine.begin() as conn:
@@ -106,12 +130,13 @@ async def create_runtime(
         await conn.run_sync(Base.metadata.create_all)
 
     session_maker = async_sessionmaker(engine, expire_on_commit=False)
-    orchestrator = SagaOrchestrator[DemoSagaState](
+    orchestrator = SagaOrchestrator[DemoSagaState, DemoSagaHistory](
         model_class=DemoSagaState,
+        history_model_class=DemoSagaHistory,
         session_maker=session_maker,
         execution_lease=execution_lease,
     )
-    admin = SagaAdmin[DemoSagaState](engine=orchestrator.engine)
+    admin = SagaAdmin[DemoSagaState, DemoSagaHistory](engine=orchestrator.engine)
     return session_maker, orchestrator, admin
 
 
@@ -120,7 +145,7 @@ async def dispose_runtime(session_maker: async_sessionmaker) -> None:
 
 
 async def print_snapshot(
-    admin: SagaAdmin[DemoSagaState],
+    admin: SagaAdmin[DemoSagaState, DemoSagaHistory],
     saga_id: UUID,
     *,
     title: str,

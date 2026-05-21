@@ -9,7 +9,7 @@ from .domain.exceptions import (
     SagaStateError,
     TypeValidationError,
 )
-from .domain.mixins import SagaStateMixin
+from .domain.mixins import SagaStateMixin, SagaStepHistoryMixin
 from .domain.models import (
     AwaitingEvent,
     BaseStep,
@@ -112,6 +112,7 @@ __all__ = [
     "SagaRepository",
     "SagaSnapshot",
     "SagaStateError",
+    "SagaStepHistoryMixin",
     "SagaStateMixin",
     "SagaStatus",
     "SagaStepStatus",

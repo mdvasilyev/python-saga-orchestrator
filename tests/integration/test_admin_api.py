@@ -24,7 +24,7 @@ from tests.integration.helpers import (
     StartOutput,
     WaitingStep,
 )
-from tests.integration.models import IntegrationSagaState
+from tests.integration.models import IntegrationSagaHistory, IntegrationSagaState
 
 
 @pytest.mark.asyncio
@@ -41,11 +41,14 @@ async def test_admin_retry_rejects_failed_saga_after_compensation(session_maker)
         retry_policy=ExponentialRetry(max_attempts=0, base_delay=timedelta(seconds=1)),
     )
 
-    orchestrator = SagaOrchestrator[IntegrationSagaState](
+    orchestrator = SagaOrchestrator[IntegrationSagaState, IntegrationSagaHistory](
         model_class=IntegrationSagaState,
+        history_model_class=IntegrationSagaHistory,
         session_maker=session_maker,
     )
-    admin = SagaAdmin[IntegrationSagaState](engine=orchestrator.engine)
+    admin = SagaAdmin[IntegrationSagaState, IntegrationSagaHistory](
+        engine=orchestrator.engine
+    )
     orchestrator.register("retry-after-compensation", builder.build())
 
     saga_id = await orchestrator.start(
@@ -70,11 +73,14 @@ async def test_admin_skip_requires_suspended_state(session_maker):
         input_map=lambda ctx: StartInput(value=ctx.initial_data["value"]),
     )
 
-    orchestrator = SagaOrchestrator[IntegrationSagaState](
+    orchestrator = SagaOrchestrator[IntegrationSagaState, IntegrationSagaHistory](
         model_class=IntegrationSagaState,
+        history_model_class=IntegrationSagaHistory,
         session_maker=session_maker,
     )
-    admin = SagaAdmin[IntegrationSagaState](engine=orchestrator.engine)
+    admin = SagaAdmin[IntegrationSagaState, IntegrationSagaHistory](
+        engine=orchestrator.engine
+    )
     orchestrator.register("skip-running", builder.build())
 
     start_task = asyncio.create_task(
@@ -120,11 +126,14 @@ async def test_admin_compensate_rolls_back_suspended_saga(session_maker):
         retry_policy=ExponentialRetry(max_attempts=1, base_delay=timedelta(hours=1)),
     )
 
-    orchestrator = SagaOrchestrator[IntegrationSagaState](
+    orchestrator = SagaOrchestrator[IntegrationSagaState, IntegrationSagaHistory](
         model_class=IntegrationSagaState,
+        history_model_class=IntegrationSagaHistory,
         session_maker=session_maker,
     )
-    admin = SagaAdmin[IntegrationSagaState](engine=orchestrator.engine)
+    admin = SagaAdmin[IntegrationSagaState, IntegrationSagaHistory](
+        engine=orchestrator.engine
+    )
     orchestrator.register("admin-compensate", builder.build())
 
     saga_id = await orchestrator.start(
@@ -153,11 +162,14 @@ async def test_admin_compensate_rejects_saga_without_completed_steps(session_mak
         retry_policy=ExponentialRetry(max_attempts=1, base_delay=timedelta(hours=1)),
     )
 
-    orchestrator = SagaOrchestrator[IntegrationSagaState](
+    orchestrator = SagaOrchestrator[IntegrationSagaState, IntegrationSagaHistory](
         model_class=IntegrationSagaState,
+        history_model_class=IntegrationSagaHistory,
         session_maker=session_maker,
     )
-    admin = SagaAdmin[IntegrationSagaState](engine=orchestrator.engine)
+    admin = SagaAdmin[IntegrationSagaState, IntegrationSagaHistory](
+        engine=orchestrator.engine
+    )
     orchestrator.register("admin-compensate-empty", builder.build())
 
     saga_id = await orchestrator.start(
@@ -181,8 +193,9 @@ async def test_get_admin_snapshot_returns(session_maker):
         input_map=lambda ctx: StartInput(value=ctx.initial_data["value"]),
     )
 
-    orchestrator = SagaOrchestrator[IntegrationSagaState](
+    orchestrator = SagaOrchestrator[IntegrationSagaState, IntegrationSagaHistory](
         model_class=IntegrationSagaState,
+        history_model_class=IntegrationSagaHistory,
         session_maker=session_maker,
     )
 
@@ -233,11 +246,14 @@ async def test_cannot_retry_step_after_compensation_has_started(session_maker):
         retry_policy=ExponentialRetry(max_attempts=0, base_delay=timedelta(seconds=0)),
     )
 
-    orchestrator = SagaOrchestrator[IntegrationSagaState](
+    orchestrator = SagaOrchestrator[IntegrationSagaState, IntegrationSagaHistory](
         model_class=IntegrationSagaState,
+        history_model_class=IntegrationSagaHistory,
         session_maker=session_maker,
     )
-    admin = SagaAdmin[IntegrationSagaState](engine=orchestrator.engine)
+    admin = SagaAdmin[IntegrationSagaState, IntegrationSagaHistory](
+        engine=orchestrator.engine
+    )
     orchestrator.register("retry-after-comp-fail", builder.build())
 
     saga_id = await orchestrator.start(
@@ -266,11 +282,14 @@ async def test_can_retry_step_on_forward_failure_without_compensation(session_ma
         retry_policy=ExponentialRetry(max_attempts=0, base_delay=timedelta(seconds=0)),
     )
 
-    orchestrator = SagaOrchestrator[IntegrationSagaState](
+    orchestrator = SagaOrchestrator[IntegrationSagaState, IntegrationSagaHistory](
         model_class=IntegrationSagaState,
+        history_model_class=IntegrationSagaHistory,
         session_maker=session_maker,
     )
-    admin = SagaAdmin[IntegrationSagaState](engine=orchestrator.engine)
+    admin = SagaAdmin[IntegrationSagaState, IntegrationSagaHistory](
+        engine=orchestrator.engine
+    )
     orchestrator.register("retry-forward-fail", builder.build())
 
     saga_id = await orchestrator.start(

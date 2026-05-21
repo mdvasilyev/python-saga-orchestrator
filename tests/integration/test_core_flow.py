@@ -27,7 +27,11 @@ from tests.integration.helpers import (
     ReserveQueueStep,
     StartInput,
 )
-from tests.integration.models import IntegrationOutboxMessage, IntegrationSagaState
+from tests.integration.models import (
+    IntegrationOutboxMessage,
+    IntegrationSagaHistory,
+    IntegrationSagaState,
+)
 
 
 @pytest.mark.asyncio
@@ -38,11 +42,14 @@ async def test_start_completes_saga(session_maker):
         input_map=lambda ctx: StartInput(value=ctx.initial_data["value"]),
     )
 
-    orchestrator = SagaOrchestrator[IntegrationSagaState](
+    orchestrator = SagaOrchestrator[IntegrationSagaState, IntegrationSagaHistory](
         model_class=IntegrationSagaState,
+        history_model_class=IntegrationSagaHistory,
         session_maker=session_maker,
     )
-    admin = SagaAdmin[IntegrationSagaState](engine=orchestrator.engine)
+    admin = SagaAdmin[IntegrationSagaState, IntegrationSagaHistory](
+        engine=orchestrator.engine
+    )
     orchestrator.register("simple", builder.build())
 
     saga_id = await orchestrator.start(
@@ -71,11 +78,14 @@ async def test_retry_flow_with_run_due(session_maker):
         retry_policy=ExponentialRetry(max_attempts=2, base_delay=timedelta(seconds=0)),
     )
 
-    orchestrator = SagaOrchestrator[IntegrationSagaState](
+    orchestrator = SagaOrchestrator[IntegrationSagaState, IntegrationSagaHistory](
         model_class=IntegrationSagaState,
+        history_model_class=IntegrationSagaHistory,
         session_maker=session_maker,
     )
-    admin = SagaAdmin[IntegrationSagaState](engine=orchestrator.engine)
+    admin = SagaAdmin[IntegrationSagaState, IntegrationSagaHistory](
+        engine=orchestrator.engine
+    )
     orchestrator.register("retry", builder.build())
 
     saga_id = await orchestrator.start(
@@ -106,11 +116,14 @@ async def test_start_rejects_duplicate_active_aggregation_id(session_maker):
         ),
     )
 
-    orchestrator = SagaOrchestrator[IntegrationSagaState](
+    orchestrator = SagaOrchestrator[IntegrationSagaState, IntegrationSagaHistory](
         model_class=IntegrationSagaState,
+        history_model_class=IntegrationSagaHistory,
         session_maker=session_maker,
     )
-    admin = SagaAdmin[IntegrationSagaState](engine=orchestrator.engine)
+    admin = SagaAdmin[IntegrationSagaState, IntegrationSagaHistory](
+        engine=orchestrator.engine
+    )
     orchestrator.register("dedupe", builder.build())
 
     first_saga_id = await orchestrator.start(
@@ -144,12 +157,15 @@ async def test_retry_and_run_due(session_maker):
         retry_policy=ExponentialRetry(max_attempts=2, base_delay=timedelta(seconds=0)),
     )
 
-    orchestrator = SagaOrchestrator[IntegrationSagaState](
+    orchestrator = SagaOrchestrator[IntegrationSagaState, IntegrationSagaHistory](
         model_class=IntegrationSagaState,
+        history_model_class=IntegrationSagaHistory,
         session_maker=session_maker,
     )
     orchestrator.register("demo", builder.build())
-    admin = SagaAdmin[IntegrationSagaState](engine=orchestrator.engine)
+    admin = SagaAdmin[IntegrationSagaState, IntegrationSagaHistory](
+        engine=orchestrator.engine
+    )
 
     saga_id = await orchestrator.start(
         saga_name="demo",
@@ -179,12 +195,15 @@ async def test_run_due_recovers_expired_running_step(session_maker):
         input_map=lambda ctx: StartInput(value=ctx.initial_data["value"]),
     )
 
-    orchestrator = SagaOrchestrator[IntegrationSagaState](
+    orchestrator = SagaOrchestrator[IntegrationSagaState, IntegrationSagaHistory](
         model_class=IntegrationSagaState,
+        history_model_class=IntegrationSagaHistory,
         session_maker=session_maker,
         execution_lease=timedelta(seconds=0),
     )
-    admin = SagaAdmin[IntegrationSagaState](engine=orchestrator.engine)
+    admin = SagaAdmin[IntegrationSagaState, IntegrationSagaHistory](
+        engine=orchestrator.engine
+    )
     orchestrator.register("recover", builder.build())
 
     start_task = asyncio.create_task(
@@ -246,12 +265,15 @@ async def test_three_step_http_and_queue_style_flow(session_maker):
         ),
     )
 
-    orchestrator = SagaOrchestrator[IntegrationSagaState](
+    orchestrator = SagaOrchestrator[IntegrationSagaState, IntegrationSagaHistory](
         model_class=IntegrationSagaState,
+        history_model_class=IntegrationSagaHistory,
         outbox_model_class=IntegrationOutboxMessage,
         session_maker=session_maker,
     )
-    admin = SagaAdmin[IntegrationSagaState](engine=orchestrator.engine)
+    admin = SagaAdmin[IntegrationSagaState, IntegrationSagaHistory](
+        engine=orchestrator.engine
+    )
     orchestrator.register("http-queue-3", builder.build())
 
     queue: asyncio.Queue[dict[str, object]] = asyncio.Queue()
@@ -346,8 +368,9 @@ async def test_get_snapshot_returns(session_maker):
         input_map=lambda ctx: StartInput(value=ctx.initial_data["value"]),
     )
 
-    orchestrator = SagaOrchestrator[IntegrationSagaState](
+    orchestrator = SagaOrchestrator[IntegrationSagaState, IntegrationSagaHistory](
         model_class=IntegrationSagaState,
+        history_model_class=IntegrationSagaHistory,
         session_maker=session_maker,
     )
 

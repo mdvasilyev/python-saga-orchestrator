@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
+from examples.common import DemoSagaHistory
 from saga_orchestrator import (
     BaseStep,
     NotifyEvent,
@@ -192,13 +193,14 @@ async def main() -> None:
         await conn.run_sync(Base.metadata.create_all)
 
     session_maker = async_sessionmaker(engine, expire_on_commit=False)
-    orchestrator = SagaOrchestrator[DemoSagaState](
+    orchestrator = SagaOrchestrator[DemoSagaState, DemoSagaHistory](
         model_class=DemoSagaState,
+        history_model_class=DemoSagaHistory,
         inbox_model_class=DemoInboxMessage,
         outbox_model_class=DemoOutboxMessage,
         session_maker=session_maker,
     )
-    admin = SagaAdmin[DemoSagaState](engine=orchestrator.engine)
+    admin = SagaAdmin[DemoSagaState, DemoSagaHistory](engine=orchestrator.engine)
 
     builder = SagaBuilder()
     builder.add_step(

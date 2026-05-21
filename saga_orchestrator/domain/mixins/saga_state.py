@@ -2,19 +2,24 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import DateTime, Enum, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.ext.mutable import MutableList
-from sqlalchemy.orm import Mapped, declarative_mixin, mapped_column
+from sqlalchemy.orm import Mapped, declarative_mixin, declared_attr, mapped_column
 
-from ..models.context import SagaContext, SagaStepHistoryEntry
+from ..models.context import SagaContext
 from ..models.enums import SagaStatus
-from .types import JsonPydanticListField, MutableModel
+from .types import MutableModel
 
 
 @declarative_mixin
 class SagaStateMixin:
+    """Mixin for saga state table.
+
+    Внимание: Пользователь обязан переопределить `step_history`.
+    """
+
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
@@ -22,28 +27,27 @@ class SagaStateMixin:
     trace_id: Mapped[str] = mapped_column(String(255), index=True)
     saga_name: Mapped[str] = mapped_column(String(255), index=True)
     status: Mapped[SagaStatus] = mapped_column(
-        Enum(SagaStatus),
-        default=SagaStatus.RUNNING,
-        index=True,
+        Enum(SagaStatus), default=SagaStatus.RUNNING, index=True
     )
     current_step_index: Mapped[int] = mapped_column(Integer, default=0)
     step_execution_token: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True),
-        nullable=True,
+        UUID(as_uuid=True), nullable=True
     )
     context: Mapped[SagaContext] = mapped_column(
-        MutableModel(SagaContext),
-        nullable=False,
+        MutableModel(SagaContext), nullable=False
     )
-    # TODO перенести историю из JSONB в отдельную таблицу
-    step_history: Mapped[list[SagaStepHistoryEntry]] = mapped_column(
-        MutableList.as_mutable(JsonPydanticListField(SagaStepHistoryEntry)),
-        default=list,
-    )
+
+    @declared_attr
+    def step_history(cls) -> Mapped[list[Any]]:
+        """Relationship to the saga history table."""
+        raise NotImplementedError(
+            f"Model '{cls.__name__}' inherits from SagaStateMixin "
+            f"but does not define 'step_history'. You must implement it. "
+            f"Example: step_history: Mapped[list['MySagaHistory']] = relationship(cascade='all, delete-orphan')"
+        )
+
     deadline_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True),
-        nullable=True,
-        index=True,
+        DateTime(timezone=True), nullable=True, index=True
     )
     retry_counter: Mapped[int] = mapped_column(Integer, default=0)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
