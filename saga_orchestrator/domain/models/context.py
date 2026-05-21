@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import datetime
 from types import MappingProxyType
-from typing import Annotated, Any, NotRequired, TypedDict
+from typing import Annotated, Any, TypedDict
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, PlainSerializer, WrapValidator
@@ -35,20 +36,22 @@ class NotifyLogEntry(TypedDict):
     correlation_id: str | None
 
 
-class SagaStepHistoryEntry(TypedDict):
+class SagaStepHistoryEntry(BaseModel):
     """A record of one step execution or compensation attempt."""
 
-    timestamp: str  # ISO 8601 format
+    model_config = ConfigDict(from_attributes=True)
+
+    timestamp: datetime
     phase: SagaStepPhase
     status: SagaStepStatus
     step_id: str
     step_name: str
     attempt: int
-    token: str
+    token: UUID
     input: dict[str, Any]  # Serialized input model
-    output: dict[str, Any] | None  # Serialized output model
-    error: str | None
-    skipped: NotRequired[bool]
+    output: dict[str, Any] | None = None  # Serialized output model
+    error: str | None = None
+    skipped: bool = False
 
 
 class SagaContext(BaseModel):

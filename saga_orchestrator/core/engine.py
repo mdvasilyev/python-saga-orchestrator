@@ -612,19 +612,19 @@ class SagaEngine(Generic[ModelT]):
                 output_model = step_def.output_model.model_validate(output_payload)
                 token = saga.step_execution_token or uuid.uuid4()
 
-                step_history: SagaStepHistoryEntry = {
-                    "timestamp": datetime.now(UTC).isoformat(),
-                    "phase": SagaStepPhase.EXECUTE,
-                    "status": SagaStepStatus.SUCCESS,
-                    "step_id": step_def.step_id,
-                    "step_name": type(step_def.step).__name__,
-                    "attempt": 0,
-                    "token": str(token),
-                    "input": {"_admin": "skip_step"},
-                    "output": output_model.model_dump(mode="json"),
-                    "error": None,
-                    "skipped": True,
-                }
+                step_history = SagaStepHistoryEntry(
+                    timestamp=datetime.now(UTC),
+                    phase=SagaStepPhase.EXECUTE,
+                    status=SagaStepStatus.SUCCESS,
+                    step_id=step_def.step_id,
+                    step_name=type(step_def.step).__name__,
+                    attempt=0,
+                    token=token,
+                    input={"_admin": "skip_step"},
+                    output=output_model.model_dump(mode="json"),
+                    error=None,
+                    skipped=True,
+                )
                 saga.step_history.append(step_history)
 
                 saga.context.save_step_output(
@@ -1020,12 +1020,12 @@ class SagaEngine(Generic[ModelT]):
                 step_idx = saga.current_step_index - 1
                 step_def = definition.steps[step_idx]
 
-                execution_entry = None
+                execution_entry: SagaStepHistoryEntry | None = None
                 for entry in reversed(saga.step_history):
                     if (
-                        entry.get("phase") == SagaStepPhase.EXECUTE
-                        and entry.get("status") == SagaStepStatus.SUCCESS
-                        and entry.get("step_id") == step_def.step_id
+                        entry.phase == SagaStepPhase.EXECUTE
+                        and entry.status == SagaStepStatus.SUCCESS
+                        and entry.step_id == step_def.step_id
                     ):
                         execution_entry = entry
                         break
@@ -1045,10 +1045,10 @@ class SagaEngine(Generic[ModelT]):
                     "token": token,
                     "attempt_number": attempt_number,
                     "original_input": step_def.input_model.model_validate(
-                        execution_entry["input"]
+                        execution_entry.input
                     ),
                     "original_output": step_def.output_model.model_validate(
-                        execution_entry["output"]
+                        execution_entry.output
                     ),
                 }
 
@@ -1362,20 +1362,20 @@ class SagaEngine(Generic[ModelT]):
         error: Exception | None,
     ) -> SagaStepHistoryEntry:
         """Return one step history record."""
-        return {
-            "timestamp": datetime.now(UTC).isoformat(),
-            "phase": phase,
-            "status": status,
-            "step_id": step_def.step_id,
-            "step_name": type(step_def.step).__name__,
-            "attempt": attempt,
-            "token": str(token),
-            "input": self._serialize_value(step_input),
-            "output": (
+        return SagaStepHistoryEntry(
+            timestamp=datetime.now(UTC),
+            phase=phase,
+            status=status,
+            step_id=step_def.step_id,
+            step_name=type(step_def.step).__name__,
+            attempt=attempt,
+            token=token,
+            input=self._serialize_value(step_input),
+            output=(
                 self._serialize_value(step_output) if step_output is not None else None
             ),
-            "error": repr(error) if error is not None else None,
-        }
+            error=repr(error) if error is not None else None,
+        )
 
     @staticmethod
     def _has_compensation_history(step_history: list[dict[str, Any]]) -> bool:

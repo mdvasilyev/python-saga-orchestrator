@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from saga_orchestrator.domain.models.context import SagaContext
+from saga_orchestrator.domain.models.context import SagaContext, SagaStepHistoryEntry
 from saga_orchestrator.domain.models.enums import SagaStepPhase, SagaStepStatus
 from tests.integration.helpers import StartInput
 from tests.integration.models import IntegrationSagaState
@@ -225,35 +225,53 @@ async def test_proves_data(session_maker):
 
 
 @pytest.mark.asyncio
-async def test_step_history_append_is_persisted(session_maker):
-    agg_id = "test-history-append"
-    saga_id, _ = await _create_saga(session_maker(), agg_id)
+async def test_step_history_with_pydantic_model_is_persisted_and_rehydrated(
+    session_maker,
+):
+    agg_id = "test-history-pydantic"
+    now = datetime.now(UTC)
 
-    history_entry = {
-        "timestamp": datetime.now(UTC).isoformat(),
-        "phase": SagaStepPhase.EXECUTE,
-        "status": SagaStepStatus.ERROR,
-        "step_id": "test_step",
-        "step_name": "MyTestStep",
-        "attempt": 1,
-        "token": str(uuid.uuid4()),
-        "input": {"some": "data"},
-        "output": None,
-        "error": "Some error occurred",
-    }
+    async with session_maker() as session:
+        saga_id, _ = await _create_saga(session, agg_id)
+
+    token = uuid.uuid4()
+    history_entry_model = SagaStepHistoryEntry(
+        timestamp=now,
+        phase=SagaStepPhase.EXECUTE,
+        status=SagaStepStatus.SUCCESS,
+        step_id="test_step_pydantic",
+        step_name="MyPydanticTestStep",
+        attempt=1,
+        token=token,
+        input={"some": "data"},
+        output={"result": "ok"},
+        error=None,
+        skipped=False,
+    )
 
     async with session_maker() as session:
         saga = await session.get(IntegrationSagaState, saga_id)
-
+        assert isinstance(saga.step_history, list)
         assert len(saga.step_history) == 0
-        saga.step_history.append(history_entry)
+        saga.step_history.append(history_entry_model)
+        from sqlalchemy.orm.attributes import get_history
+
+        assert get_history(saga, "step_history").has_changes()
         await session.commit()
 
     async with session_maker() as session:
         reloaded_saga = await session.get(IntegrationSagaState, saga_id)
+        assert reloaded_saga is not None
         assert len(reloaded_saga.step_history) == 1
-        saved_entry = reloaded_saga.step_history[0]
+        rehydrated_entry = reloaded_saga.step_history[0]
+        assert isinstance(
+            rehydrated_entry, SagaStepHistoryEntry
+        ), f"Expected SagaStepHistoryEntry, got {type(rehydrated_entry)}"
 
-        assert saved_entry["step_id"] == "test_step"
-        assert saved_entry["status"] == SagaStepStatus.ERROR
-        assert saved_entry["error"] == "Some error occurred"
+        assert rehydrated_entry.step_id == "test_step_pydantic"
+        assert rehydrated_entry.status == SagaStepStatus.SUCCESS
+        assert rehydrated_entry.output == {"result": "ok"}
+        assert rehydrated_entry.token == token
+
+        assert isinstance(rehydrated_entry.timestamp, datetime)
+        assert abs(rehydrated_entry.timestamp - now).total_seconds() < 1

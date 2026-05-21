@@ -118,8 +118,8 @@ async def test_compensation_can_wait_for_event_and_resume_on_notify(session_make
 
     history = state_after_fail.step_history
     assert len(history) == 3
-    assert history[2]["phase"] == SagaStepPhase.COMPENSATE
-    assert history[2]["status"] == SagaStepStatus.WAITING
+    assert history[2].phase == SagaStepPhase.COMPENSATE
+    assert history[2].status == SagaStepStatus.WAITING
 
     token = state_after_fail.step_execution_token
     result = await orchestrator.notify_detailed(
@@ -139,8 +139,8 @@ async def test_compensation_can_wait_for_event_and_resume_on_notify(session_make
 
     final_history = final_state.step_history
     assert len(final_history) == 4
-    assert final_history[3]["phase"] == SagaStepPhase.COMPENSATE
-    assert final_history[3]["status"] == SagaStepStatus.SUCCESS
+    assert final_history[3].phase == SagaStepPhase.COMPENSATE
+    assert final_history[3].status == SagaStepStatus.SUCCESS
 
 
 @pytest.mark.asyncio
@@ -225,8 +225,8 @@ async def test_compensation_error_retries_via_compensating_suspended(session_mak
     assert state_after_fail.retry_counter == 1
 
     history = state_after_fail.step_history
-    assert history[2]["phase"] == SagaStepPhase.COMPENSATE
-    assert history[2]["status"] == SagaStepStatus.ERROR
+    assert history[2].phase == SagaStepPhase.COMPENSATE
+    assert history[2].status == SagaStepStatus.ERROR
 
     resumed = await orchestrator.run_due()
     assert resumed == 1
@@ -276,12 +276,12 @@ async def test_saga_reaches_compensated_status_on_successful_rollback(session_ma
         (
             entry
             for entry in state.step_history
-            if entry["phase"] == SagaStepPhase.COMPENSATE
+            if entry.phase == SagaStepPhase.COMPENSATE
         ),
         None,
     )
     assert compensate_history_entry is not None
-    assert compensate_history_entry["status"] == SagaStepStatus.SUCCESS
+    assert compensate_history_entry.status == SagaStepStatus.SUCCESS
     assert state.last_error == "Compensation completed successfully"
 
 
@@ -325,9 +325,9 @@ async def test_saga_reaches_failed_status_when_compensation_fails(session_maker)
         (
             entry
             for entry in state.step_history
-            if entry["phase"] == SagaStepPhase.COMPENSATE
+            if entry.phase == SagaStepPhase.COMPENSATE
         ),
         None,
     )
     assert compensate_history_entry is not None
-    assert compensate_history_entry["status"] == SagaStepStatus.ERROR
+    assert compensate_history_entry.status == SagaStepStatus.ERROR
