@@ -29,7 +29,7 @@ from .domain.models import (
     StepInputMap,
     StepRef,
 )
-from .domain.models.enums import SagaStatus
+from .domain.models.enums import SagaStatus, SagaStepPhase, SagaStepStatus
 from .inbox import (
     ClaimedInboxMessage,
     FixedInboxRetry,
@@ -114,6 +114,8 @@ __all__ = [
     "SagaStateError",
     "SagaStateMixin",
     "SagaStatus",
+    "SagaStepStatus",
+    "SagaStepPhase",
     "StepDefinition",
     "StepAwaitEvent",
     "StepInputMap",
