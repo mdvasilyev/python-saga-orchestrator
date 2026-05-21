@@ -159,6 +159,7 @@ class SagaEngine(Generic[ModelT]):
                     id=saga_id,
                     aggregation_id=aggregation_id,
                     trace_id=saga_trace_id,
+                    saga_name=saga_name,
                     status=SagaStatus.RUNNING,
                     current_step_index=0,
                     step_execution_token=uuid.uuid4(),
@@ -491,6 +492,7 @@ class SagaEngine(Generic[ModelT]):
                     id=saga.id,
                     aggregation_id=saga.aggregation_id,
                     trace_id=saga.trace_id,
+                    saga_name=saga.saga_name,
                     status=saga.status,
                     current_step_index=saga.current_step_index,
                     step_execution_token=saga.step_execution_token,
@@ -1399,6 +1401,7 @@ class SagaEngine(Generic[ModelT]):
         return SagaSnapshot(
             id=saga.id,
             aggregation_id=saga.aggregation_id,
+            saga_name=saga.saga_name,
             status=saga.status,
             current_step_index=saga.current_step_index,
             retry_counter=saga.retry_counter,

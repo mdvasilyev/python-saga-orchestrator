@@ -28,6 +28,7 @@ def _make_saga(
         id=uuid.uuid4(),
         aggregation_id=aggregation_id,
         trace_id=f"trace-{aggregation_id}",
+        saga_name=f"saga_{aggregation_id}",
         status=status,
         current_step_index=0,
         step_execution_token=uuid.uuid4(),

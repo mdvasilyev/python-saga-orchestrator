@@ -336,3 +336,42 @@ async def test_three_step_http_and_queue_style_flow(session_maker):
     final_state = await admin.get_saga(saga_id)
     assert final_state.status == SagaStatus.COMPLETED
     assert final_state.current_step_index == 3
+
+
+@pytest.mark.asyncio
+async def test_get_snapshot_returns(session_maker):
+    builder = SagaBuilder()
+    builder.add_step(
+        step=AddOneStep(),
+        input_map=lambda ctx: StartInput(value=ctx.initial_data["value"]),
+    )
+
+    orchestrator = SagaOrchestrator[IntegrationSagaState](
+        model_class=IntegrationSagaState,
+        session_maker=session_maker,
+    )
+
+    saga_name = "test_snapshot_saga"
+    orchestrator.register(saga_name, builder.build())
+
+    aggregation_id = "agg-snap-1"
+    trace_id = "trace-snap-1"
+
+    saga_id = await orchestrator.start(
+        saga_name=saga_name,
+        initial_data={"value": 10},
+        aggregation_id=aggregation_id,
+        trace_id=trace_id,
+    )
+
+    snapshot = await orchestrator.get_snapshot(saga_id)
+
+    assert snapshot is not None
+    assert snapshot.id == saga_id
+    assert snapshot.saga_name == saga_name
+    assert snapshot.aggregation_id == aggregation_id
+    assert snapshot.trace_id == trace_id
+    assert snapshot.status == SagaStatus.COMPLETED
+    assert snapshot.current_step_index == 1
+    assert snapshot.deadline_at is None
+    assert snapshot.last_error is None

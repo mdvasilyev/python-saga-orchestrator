@@ -13,6 +13,7 @@ from saga_orchestrator.domain.exceptions import SagaStateError
 from saga_orchestrator.domain.models import ExponentialRetry
 from saga_orchestrator.domain.models.enums import SagaStatus
 from tests.integration.helpers import (
+    AddOneStep,
     CompensatingStep,
     FailingStep,
     LongRunningStep,
@@ -168,3 +169,45 @@ async def test_admin_compensate_rejects_saga_without_completed_steps(session_mak
 
     with pytest.raises(SagaStateError):
         await admin.compensate_step(saga_id)
+
+
+@pytest.mark.asyncio
+async def test_get_admin_snapshot_returns(session_maker):
+    builder = SagaBuilder()
+    builder.add_step(
+        step=AddOneStep(),
+        input_map=lambda ctx: StartInput(value=ctx.initial_data["value"]),
+    )
+
+    orchestrator = SagaOrchestrator[IntegrationSagaState](
+        model_class=IntegrationSagaState,
+        session_maker=session_maker,
+    )
+
+    saga_name = "test_admin_snapshot_saga"
+    orchestrator.register(saga_name, builder.build())
+
+    aggregation_id = "agg-admin-snap-1"
+
+    saga_id = await orchestrator.start(
+        saga_name=saga_name,
+        initial_data={"value": 42},
+        aggregation_id=aggregation_id,
+    )
+
+    admin_snapshot = await orchestrator.engine.get_admin_snapshot(saga_id)
+
+    assert admin_snapshot is not None
+    assert admin_snapshot.id == saga_id
+    assert admin_snapshot.saga_name == saga_name
+    assert admin_snapshot.aggregation_id == aggregation_id
+    assert admin_snapshot.status == SagaStatus.COMPLETED
+
+    assert admin_snapshot.context is not None
+    assert admin_snapshot.context.saga_name == saga_name
+    assert admin_snapshot.context.initial_data == {"value": 42}
+
+    assert isinstance(admin_snapshot.step_history, list)
+    assert len(admin_snapshot.step_history) == 1
+    assert admin_snapshot.step_history[0]["step_name"] == "AddOneStep"
+    assert admin_snapshot.step_history[0]["status"] == "success"

@@ -13,6 +13,7 @@ from .enums import SagaStatus
 class SagaSnapshot:
     id: UUID
     aggregation_id: str
+    saga_name: str
     status: SagaStatus
     current_step_index: int
     retry_counter: int
@@ -27,6 +28,7 @@ class SagaAdminSnapshot:
     id: UUID
     aggregation_id: str
     trace_id: str
+    saga_name: str
     status: SagaStatus
     current_step_index: int
     step_execution_token: UUID | None

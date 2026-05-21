@@ -25,6 +25,7 @@ async def _create_saga(
     saga = IntegrationSagaState(
         id=saga_id,
         aggregation_id=aggregation_id,
+        saga_name=f"saga_{saga_id}",
         trace_id=str(uuid.uuid4()),
         context=context,
     )
@@ -179,15 +180,17 @@ async def test_complex_object_in_any_field_is_serialized(session_maker):
     """
     agg_id = "test-any-type"
     saga_id = uuid.uuid4()
+    saga_name = "test_saga"
     initial_obj = StartInput(value=123)
     context = SagaContext(
         saga_id=saga_id,
-        saga_name="test_saga",
+        saga_name=saga_name,
         initial_data=initial_obj,
     )
     saga = IntegrationSagaState(
         id=saga_id,
         aggregation_id=agg_id,
+        saga_name=saga_name,
         trace_id=str(uuid.uuid4()),
         context=context,
     )

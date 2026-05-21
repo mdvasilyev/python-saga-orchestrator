@@ -24,6 +24,7 @@ class SagaStateMixin:
     )
     aggregation_id: Mapped[str] = mapped_column(String(255), index=True)
     trace_id: Mapped[str] = mapped_column(String(255), index=True)
+    saga_name: Mapped[str] = mapped_column(String(255), index=True)
     status: Mapped[SagaStatus] = mapped_column(
         Enum(SagaStatus),
         default=SagaStatus.RUNNING,
