@@ -11,6 +11,7 @@ from saga_orchestrator.domain.exceptions import (
     ActiveSagaAlreadyExistsError,
     SagaNotFoundError,
 )
+from saga_orchestrator.domain.models.context import SagaContext
 from saga_orchestrator.domain.models.enums import SagaStatus
 
 from .models import IntegrationSagaState
@@ -22,14 +23,18 @@ def _make_saga(
     status: SagaStatus,
     deadline_at: datetime | None = None,
 ) -> IntegrationSagaState:
+    saga_id = uuid.uuid4()
     return IntegrationSagaState(
         id=uuid.uuid4(),
         aggregation_id=aggregation_id,
         trace_id=f"trace-{aggregation_id}",
+        saga_name=f"saga_{aggregation_id}",
         status=status,
         current_step_index=0,
         step_execution_token=uuid.uuid4(),
-        context={"saga_name": "repo_test", "initial_data": {}, "step_outputs": {}},
+        context=SagaContext(
+            saga_id=saga_id, saga_name="repo_test", initial_data={}, step_outputs={}
+        ),
         step_history=[],
         deadline_at=deadline_at,
         retry_counter=0,

@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import os
+import uuid
 from datetime import timedelta
 
 from pydantic import BaseModel
+from sqlalchemy import ForeignKey
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from saga_orchestrator import (
     BaseStep,
@@ -14,6 +16,7 @@ from saga_orchestrator import (
     SagaBuilder,
     SagaOrchestrator,
     SagaStateMixin,
+    SagaStepHistoryMixin,
 )
 
 DATABASE_URL = os.getenv(
@@ -26,8 +29,23 @@ class Base(DeclarativeBase):
     pass
 
 
+class ModelDeploySagaHistory(Base, SagaStepHistoryMixin):
+    __tablename__ = "model_deploy_saga_history"
+
+    saga_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("model_deploy_saga.id", ondelete="CASCADE"),
+        index=True,
+    )
+
+
 class ModelDeploySagaState(Base, SagaStateMixin):
     __tablename__ = "model_deploy_saga"
+
+    step_history: Mapped[list[ModelDeploySagaHistory]] = relationship(
+        "ModelDeploySagaHistory",
+        cascade="all, delete-orphan",
+        order_by="ModelDeploySagaHistory.id",
+    )
 
 
 class CheckModelInput(BaseModel):
@@ -76,8 +94,9 @@ async def main() -> None:
         retry_policy=ExponentialRetry(max_attempts=3, base_delay=timedelta(seconds=1)),
     )
 
-    orchestrator = SagaOrchestrator[ModelDeploySagaState](
+    orchestrator = SagaOrchestrator[ModelDeploySagaState, ModelDeploySagaHistory](
         model_class=ModelDeploySagaState,
+        history_model_class=ModelDeploySagaHistory,
         session_maker=session_maker,
     )
     orchestrator.register("ai_deploy_v1", builder.build())

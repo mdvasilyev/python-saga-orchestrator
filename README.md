@@ -103,11 +103,13 @@ Your SQLAlchemy model inherits `SagaStateMixin` to store:
 ## Quick start
 
 ```python
+import uuid
 from datetime import timedelta
 
 from pydantic import BaseModel
+from sqlalchemy import ForeignKey
 from sqlalchemy.ext.asyncio import async_sessionmaker
-from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from saga_orchestrator import (
     BaseStep,
@@ -116,6 +118,7 @@ from saga_orchestrator import (
     SagaBuilder,
     SagaOrchestrator,
     SagaStateMixin,
+    SagaStepHistoryMixin,
 )
 
 
@@ -123,8 +126,23 @@ class Base(DeclarativeBase):
     pass
 
 
+class OrderSagaHistory(Base, SagaStepHistoryMixin):
+    __tablename__ = "order_saga_history"
+
+    saga_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("order_saga_state.id", ondelete="CASCADE"),
+        index=True,
+    )
+
+
 class OrderSagaState(Base, SagaStateMixin):
     __tablename__ = "order_saga_state"
+
+    step_history: Mapped[list[OrderSagaHistory]] = relationship(
+        "OrderSagaHistory",
+        cascade="all, delete-orphan",
+        order_by="OrderSagaHistory.id",
+    )
 
 
 class ReserveInput(BaseModel):
@@ -178,15 +196,20 @@ def build_order_saga():
 
 
 def setup_saga(
-        session_maker: async_sessionmaker,
-) -> tuple[SagaOrchestrator[OrderSagaState], SagaAdmin[OrderSagaState]]:
-    orchestrator = SagaOrchestrator[OrderSagaState](
+    session_maker: async_sessionmaker,
+) -> tuple[
+    SagaOrchestrator[OrderSagaState, OrderSagaHistory], 
+    SagaAdmin[OrderSagaState, OrderSagaHistory]
+]:
+    orchestrator = SagaOrchestrator[OrderSagaState, OrderSagaHistory](
         model_class=OrderSagaState,
+        history_model_class=OrderSagaHistory,
         session_maker=session_maker,
     )
     orchestrator.register("create_order_v1", build_order_saga())
 
-    admin = SagaAdmin[OrderSagaState](engine=orchestrator.engine)
+    admin = SagaAdmin[OrderSagaState, OrderSagaHistory](engine=orchestrator.engine)
+    
     return orchestrator, admin
 ```
 

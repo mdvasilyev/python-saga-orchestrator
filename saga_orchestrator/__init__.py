@@ -9,7 +9,7 @@ from .domain.exceptions import (
     SagaStateError,
     TypeValidationError,
 )
-from .domain.mixins import SagaStateMixin
+from .domain.mixins import SagaStateMixin, SagaStepHistoryMixin
 from .domain.models import (
     AwaitingEvent,
     BaseStep,
@@ -29,7 +29,7 @@ from .domain.models import (
     StepInputMap,
     StepRef,
 )
-from .domain.models.enums import SagaStatus
+from .domain.models.enums import SagaStatus, SagaStepPhase, SagaStepStatus
 from .inbox import (
     ClaimedInboxMessage,
     FixedInboxRetry,
@@ -112,8 +112,11 @@ __all__ = [
     "SagaRepository",
     "SagaSnapshot",
     "SagaStateError",
+    "SagaStepHistoryMixin",
     "SagaStateMixin",
     "SagaStatus",
+    "SagaStepStatus",
+    "SagaStepPhase",
     "StepDefinition",
     "StepAwaitEvent",
     "StepInputMap",

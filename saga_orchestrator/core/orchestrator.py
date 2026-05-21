@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ..domain.mixins import SagaStateMixin
+from ..domain.mixins.saga_step_histrory import SagaStepHistoryMixin
 from ..domain.models import (
     AwaitingEvent,
     NotifyEvent,
@@ -27,15 +28,17 @@ from .engine import SagaEngine
 from .repository import SagaRepository
 
 ModelT = TypeVar("ModelT", bound=SagaStateMixin)
+HistoryModelT = TypeVar("HistoryModelT", bound=SagaStepHistoryMixin)
 
 
-class SagaOrchestrator(Generic[ModelT]):
+class SagaOrchestrator(Generic[ModelT, HistoryModelT]):
     """Provide the public runtime API for saga execution."""
 
     def __init__(
         self,
         *,
         model_class: type[ModelT],
+        history_model_class: type[HistoryModelT],
         session_maker: async_sessionmaker[AsyncSession],
         inbox_model_class: type[InboxMessageMixin] | None = None,
         inbox_writer: InboxWriter | None = None,
@@ -48,6 +51,7 @@ class SagaOrchestrator(Generic[ModelT]):
         """Initialize the orchestrator facade."""
         self._engine = SagaEngine(
             model_class=model_class,
+            history_model_class=history_model_class,
             session_maker=session_maker,
             inbox_model_class=inbox_model_class,
             inbox_writer=inbox_writer,

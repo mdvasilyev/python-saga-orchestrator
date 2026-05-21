@@ -1,13 +1,15 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class SagaStatus(str, Enum):
+class SagaStatus(StrEnum):
     RUNNING = "RUNNING"
     SUSPENDED = "SUSPENDED"
     FAILED = "FAILED"
     COMPENSATING = "COMPENSATING"
     COMPLETED = "COMPLETED"
+    COMPENSATING_SUSPENDED = "COMPENSATING_SUSPENDED"
+    COMPENSATED = "COMPENSATED"
 
     @property
     def is_terminal(self) -> bool:
-        return self in {self.FAILED, self.COMPLETED}
+        return self in {self.FAILED, self.COMPLETED, self.COMPENSATED}

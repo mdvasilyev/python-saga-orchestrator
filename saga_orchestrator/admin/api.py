@@ -7,17 +7,19 @@ from pydantic import BaseModel
 
 from ..core.engine import SagaEngine
 from ..domain.mixins import SagaStateMixin
+from ..domain.mixins.saga_step_histrory import SagaStepHistoryMixin
 from ..domain.models import SagaAdminSnapshot
 
 ModelT = TypeVar("ModelT", bound=SagaStateMixin)
+HistoryModelT = TypeVar("HistoryModelT", bound=SagaStepHistoryMixin)
 
 
-class SagaAdmin(Generic[ModelT]):
+class SagaAdmin(Generic[ModelT, HistoryModelT]):
     """Provide administrative operations for persisted saga instances."""
 
     def __init__(
         self,
-        engine: SagaEngine[ModelT],
+        engine: SagaEngine[ModelT, HistoryModelT],
     ) -> None:
         """Initialize the admin API facade."""
         self._engine = engine

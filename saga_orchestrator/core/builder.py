@@ -11,6 +11,9 @@ from ..domain.models import (
     BaseStep,
     InputContext,
     NoRetry,
+    OnFailedMap,
+    OnStartMap,
+    OnTerminalStateMap,
     OutboxMap,
     RetryPolicy,
     SagaDefinition,
@@ -27,6 +30,11 @@ class SagaBuilder:
         """Initialize the builder configuration."""
         self._steps: list[StepDefinition[Any, Any]] = []
         self._compensate_on_failure = compensate_on_failure
+
+        self._on_start_map: OnStartMap | None = None
+        self._on_completed_map: OnTerminalStateMap | None = None
+        self._on_failed_map: OnFailedMap | None = None
+        self._on_compensated_map: OnTerminalStateMap | None = None
 
     def add_step(
         self,
@@ -62,6 +70,34 @@ class SagaBuilder:
         self._steps.append(definition)
         return StepRef(step_id=normalized_step_id, output_model=step.output_model)
 
+    def on_start(self, on_start_map: OnStartMap) -> SagaBuilder:
+        """Define actions to be taken when the saga starts."""
+        if not callable(on_start_map):
+            raise SagaDefinitionError("on_start_map must be callable")
+        self._on_start_map = on_start_map
+        return self
+
+    def on_completed(self, on_completed_map: OnTerminalStateMap) -> SagaBuilder:
+        """Define actions to be taken when the saga completes successfully."""
+        if not callable(on_completed_map):
+            raise SagaDefinitionError("on_completed_map must be callable")
+        self._on_completed_map = on_completed_map
+        return self
+
+    def on_failed(self, on_failed_map: OnFailedMap) -> SagaBuilder:
+        """Define actions to be taken when the saga fails."""
+        if not callable(on_failed_map):
+            raise SagaDefinitionError("on_failed_map must be callable")
+        self._on_failed_map = on_failed_map
+        return self
+
+    def on_compensated(self, on_compensated_map: OnTerminalStateMap) -> SagaBuilder:
+        """Define actions to be taken when the saga is fully compensated."""
+        if not callable(on_compensated_map):
+            raise SagaDefinitionError("on_compensated_map must be callable")
+        self._on_compensated_map = on_compensated_map
+        return self
+
     def build(self) -> SagaDefinition:
         """Return the final saga definition."""
         if not self._steps:
@@ -69,6 +105,10 @@ class SagaBuilder:
         return SagaDefinition(
             steps=tuple(self._steps),
             compensate_on_failure=self._compensate_on_failure,
+            on_start_map=self._on_start_map,
+            on_completed_map=self._on_completed_map,
+            on_failed_map=self._on_failed_map,
+            on_compensated_map=self._on_compensated_map,
         )
 
     @staticmethod
