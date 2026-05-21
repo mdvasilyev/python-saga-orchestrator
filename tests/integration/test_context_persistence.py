@@ -79,7 +79,7 @@ async def test_top_level_attribute_change_is_persisted(session_maker):
 @pytest.mark.asyncio
 async def test_nested_list_mutation_is_forbidden(session_maker):
     """
-    Проверяет, что архитектура защищает от прямых мутаций списка (баг с потерей данных закрыт).
+    Проверяет, что архитектура защищает от прямых мутаций списка
     """
     agg_id = "test-list-forbidden"
     saga_id, _ = await _create_saga(session_maker(), agg_id)
