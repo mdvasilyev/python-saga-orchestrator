@@ -31,6 +31,17 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install build twine setuptools-scm
 
+      - name: Validate version matches tag
+        run: |
+          EXPECTED_VERSION="${GITHUB_REF_NAME#v}"
+          COMPUTED_VERSION="$(python -m setuptools_scm)"
+          echo "Tag version: ${EXPECTED_VERSION}"
+          echo "Computed version: ${COMPUTED_VERSION}"
+          if [ "${COMPUTED_VERSION}" != "${EXPECTED_VERSION}" ]; then
+            echo "Version mismatch: tag ${EXPECTED_VERSION}, computed ${COMPUTED_VERSION}"
+            exit 1
+          fi
+
       - name: Build package
         run: python -m build
 
