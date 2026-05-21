@@ -1378,11 +1378,9 @@ class SagaEngine(Generic[ModelT]):
         )
 
     @staticmethod
-    def _has_compensation_history(step_history: list[dict[str, Any]]) -> bool:
+    def _has_compensation_history(step_history: list[SagaStepHistoryEntry]) -> bool:
         """Return whether step history contains a compensation entry."""
-        return any(
-            entry.get("phase") == SagaStepPhase.COMPENSATE for entry in step_history
-        )
+        return any(entry.phase == SagaStepPhase.COMPENSATE for entry in step_history)
 
     def _running_deadline_for_step(
         self,

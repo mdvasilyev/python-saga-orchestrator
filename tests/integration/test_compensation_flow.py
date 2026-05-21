@@ -16,6 +16,7 @@ from tests.integration.helpers import (
     CompensateWaitsWithTimeoutStep,
     CompensatingStep,
     FailingStep,
+    FailsOnceStep,
     FlakyCompensateStep,
     IrreversibleStep,
     NextInput,

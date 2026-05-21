@@ -16,6 +16,8 @@ from tests.integration.helpers import (
     AddOneStep,
     CompensatingStep,
     FailingStep,
+    FailsOnceStep,
+    IrreversibleStep,
     LongRunningStep,
     NextInput,
     StartInput,
@@ -211,3 +213,78 @@ async def test_get_admin_snapshot_returns(session_maker):
     assert len(admin_snapshot.step_history) == 1
     assert admin_snapshot.step_history[0].step_name == "AddOneStep"
     assert admin_snapshot.step_history[0].status == "success"
+
+
+@pytest.mark.asyncio
+async def test_cannot_retry_step_after_compensation_has_started(session_maker):
+    irreversible_step = IrreversibleStep()
+    failing_step = FailingStep()
+
+    builder = SagaBuilder(compensate_on_failure=True)
+    ref = builder.add_step(
+        step=irreversible_step,
+        input_map=lambda ctx: StartInput(value=ctx.initial_data["value"]),
+        retry_policy=ExponentialRetry(max_attempts=0, base_delay=timedelta(seconds=0)),
+    )
+    builder.add_step(
+        step=failing_step,
+        depends_on=ref,
+        input_map=lambda out: NextInput(value=out.value),
+        retry_policy=ExponentialRetry(max_attempts=0, base_delay=timedelta(seconds=0)),
+    )
+
+    orchestrator = SagaOrchestrator[IntegrationSagaState](
+        model_class=IntegrationSagaState,
+        session_maker=session_maker,
+    )
+    admin = SagaAdmin[IntegrationSagaState](engine=orchestrator.engine)
+    orchestrator.register("retry-after-comp-fail", builder.build())
+
+    saga_id = await orchestrator.start(
+        saga_name="retry-after-comp-fail",
+        initial_data={"value": 1},
+        aggregation_id="agg-retry-comp-fail",
+    )
+
+    state = await admin.get_saga(saga_id)
+    assert state.status == SagaStatus.FAILED
+
+    with pytest.raises(
+        SagaStateError, match="Cannot retry saga after compensation has already started"
+    ):
+        await admin.retry_step(saga_id)
+
+
+@pytest.mark.asyncio
+async def test_can_retry_step_on_forward_failure_without_compensation(session_maker):
+    fails_once_step = FailsOnceStep()
+
+    builder = SagaBuilder(compensate_on_failure=False)
+    builder.add_step(
+        step=fails_once_step,
+        input_map=lambda ctx: StartInput(value=ctx.initial_data["value"]),
+        retry_policy=ExponentialRetry(max_attempts=0, base_delay=timedelta(seconds=0)),
+    )
+
+    orchestrator = SagaOrchestrator[IntegrationSagaState](
+        model_class=IntegrationSagaState,
+        session_maker=session_maker,
+    )
+    admin = SagaAdmin[IntegrationSagaState](engine=orchestrator.engine)
+    orchestrator.register("retry-forward-fail", builder.build())
+
+    saga_id = await orchestrator.start(
+        saga_name="retry-forward-fail",
+        initial_data={"value": 10},
+        aggregation_id="agg-retry-forward",
+    )
+
+    state_before = await admin.get_saga(saga_id)
+    assert state_before.status == SagaStatus.FAILED
+    assert fails_once_step.calls == 1
+
+    await admin.retry_step(saga_id)
+
+    state_after = await admin.get_saga(saga_id)
+    assert state_after.status == SagaStatus.COMPLETED
+    assert fails_once_step.calls == 2
