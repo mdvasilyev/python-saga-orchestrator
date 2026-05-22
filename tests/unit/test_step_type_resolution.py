@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import (
-    Generic,
-    TypeVar
-)
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from typing import Generic, TypeVar
 
 import pytest
 from pydantic import BaseModel
