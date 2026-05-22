@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import contextlib
 import inspect
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -8,6 +7,7 @@ from datetime import timedelta
 from typing import (
     Any,
     Generic,
+    Mapping,
     TypeAlias,
     TypeVar,
     get_args,
@@ -60,16 +60,16 @@ class InputContext:
         """
         Возвращает тип ('event_type') последнего полученного события.
         """
-        with contextlib.suppress(KeyError, TypeError):
-            return self.context["latest_event_meta"]["event_type"]
-        return None
+        if not isinstance(self.context.latest_event_meta, Mapping):
+            return None
+        return self.context.latest_event_meta.get("event_type")
 
     @property
     def latest_event_payload(self) -> Any | None:
         """
         Возвращает "сырую" полезную нагрузку (payload) последнего полученного события.
         """
-        return self.context.get("latest_event")
+        return self.context.latest_event
 
 
 RootInputMap: TypeAlias = Callable[[InputContext], InputModelT | dict[str, Any]]
