@@ -5,9 +5,8 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
-from sqlalchemy import JSON, DateTime
+from sqlalchemy import JSON, DateTime, Integer, String, Text, func
 from sqlalchemy import Enum as SqlEnum
-from sqlalchemy import Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.ext.mutable import MutableDict
 from sqlalchemy.orm import Mapped, declarative_mixin, mapped_column

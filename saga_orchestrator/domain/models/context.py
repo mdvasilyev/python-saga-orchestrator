@@ -55,7 +55,6 @@ class SagaStepHistoryEntry(BaseModel):
 
 
 class SagaContext(BaseModel):
-
     model_config = ConfigDict(from_attributes=True, validate_assignment=True)
 
     # -- Core data --
