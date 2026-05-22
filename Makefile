@@ -5,8 +5,8 @@ test: tests
 
 
 format:
-	@isort .
-	@black .
+	@ruff format .
+	@ruff check . --fix
 
 tests:
 	@docker compose up --build --abort-on-container-exit
