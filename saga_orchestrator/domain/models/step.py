@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import contextlib
 import inspect
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -8,6 +7,7 @@ from datetime import timedelta
 from typing import (
     Any,
     Generic,
+    Mapping,
     TypeAlias,
     TypeVar,
     get_args,
@@ -60,16 +60,16 @@ class InputContext:
         """
         Возвращает тип ('event_type') последнего полученного события.
         """
-        with contextlib.suppress(KeyError, TypeError):
-            return self.context["latest_event_meta"]["event_type"]
-        return None
+        if not isinstance(self.context.latest_event_meta, Mapping):
+            return None
+        return self.context.latest_event_meta.get("event_type")
 
     @property
     def latest_event_payload(self) -> Any | None:
         """
         Возвращает "сырую" полезную нагрузку (payload) последнего полученного события.
         """
-        return self.context.get("latest_event")
+        return self.context.latest_event
 
 
 RootInputMap: TypeAlias = Callable[[InputContext], InputModelT | dict[str, Any]]
@@ -102,16 +102,49 @@ class BaseStep(Generic[InputModelT, OutputModelT]):
 
     def __init_subclass__(cls) -> None:
         super().__init_subclass__()
-        if cls is BaseStep:
+        if cls is BaseStep or inspect.isabstract(cls):
             return
+        generic_base = None
+        for base in getattr(cls, "__orig_bases__", []):
+            origin = get_origin(base)
+            if origin and issubclass(origin, BaseStep):
+                generic_base = base
+                break
 
-        hints = get_type_hints(cls.execute)
+        if not generic_base:
+            raise TypeValidationError(
+                f"Could not find generic parameters for {cls.__name__}. "
+                f"Ensure it inherits from a parameterized BaseStep, e.g., BaseStep[MyInput, MyOutput]"
+            )
+
+        concrete_args = get_args(generic_base)
+        if not concrete_args or any(isinstance(arg, TypeVar) for arg in concrete_args):
+            raise TypeValidationError(f"Step '{cls.__name__}' inherits from a generic Step "
+                                      "but was not parameterized with concrete Input/Output models.")
+
+        concrete_input_model, concrete_output_model = concrete_args
+        try:
+            hints = get_type_hints(cls.execute, globalns=inspect.getmodule(cls).__dict__, include_extras=True)
+        except (AttributeError, NameError) as e:
+             raise TypeValidationError(
+                f"Could not resolve type hints for '{cls.__name__}.execute'. "
+                f"Ensure all types are correctly imported. Original error: {e}"
+            )
+
+
         if "inp" not in hints or "return" not in hints:
             raise TypeValidationError(
                 f"Step '{cls.__name__}' must type annotate execute(inp) and return type"
             )
-        input_model = hints["inp"]
-        output_model = cls._resolve_output_model(hints["return"])
+
+        input_annotation = hints["inp"]
+        if isinstance(input_annotation, TypeVar):
+            input_model = concrete_input_model
+        else:
+            input_model = input_annotation
+
+        return_annotation = hints["return"]
+        output_model = cls._resolve_output_model(return_annotation, concrete_output_model)
         if not (inspect.isclass(input_model) and issubclass(input_model, BaseModel)):
             raise TypeValidationError(
                 f"Step '{cls.__name__}' input must inherit from pydantic BaseModel"
@@ -120,22 +153,36 @@ class BaseStep(Generic[InputModelT, OutputModelT]):
         cls.output_model = output_model
 
     @staticmethod
-    def _resolve_output_model(annotation: Any) -> type[BaseModel]:
+    def _resolve_output_model(annotation: Any, concrete_model: type[BaseModel] | None = None) -> type[BaseModel]:
+        def find_model_in_args(args_tuple: tuple) -> list[type[BaseModel]]:
+            candidates = []
+            for arg in args_tuple:
+                if isinstance(arg, TypeVar) and concrete_model:
+                    candidates.append(concrete_model)
+                elif inspect.isclass(arg) and issubclass(arg, BaseModel):
+                    candidates.append(arg)
+            return list(dict.fromkeys(candidates))
+
         if inspect.isclass(annotation) and issubclass(annotation, BaseModel):
             return annotation
 
         origin = get_origin(annotation)
         if origin is None:
+            if isinstance(annotation, TypeVar) and concrete_model:
+                return concrete_model
             raise TypeValidationError("Step execute return type must include BaseModel")
-        args = tuple(arg for arg in get_args(annotation) if arg is not type(None))
-        model_candidates = [
-            arg for arg in args if inspect.isclass(arg) and issubclass(arg, BaseModel)
-        ]
+
+        args = get_args(annotation)
+        model_candidates = find_model_in_args(args)
         await_candidates = [arg for arg in args if arg is StepAwaitEvent]
+
         if len(model_candidates) == 1 and len(await_candidates) <= 1:
             return model_candidates[0]
+
         raise TypeValidationError(
-            "Step execute return type must be BaseModel or BaseModel | StepAwaitEvent"
+            f"Step execute return type must be BaseModel or BaseModel | StepAwaitEvent. "
+            f"Found models: {[m.__name__ for m in model_candidates]}, "
+            f"Found await events: {len(await_candidates)}."
         )
 
     async def execute(self, inp: InputModelT) -> OutputModelT | StepAwaitEvent:

@@ -277,9 +277,9 @@ async def test_step_history_with_orm_model_is_persisted_and_rehydrated(
 
         rehydrated_entry = reloaded_saga.step_history[0]
 
-        assert isinstance(
-            rehydrated_entry, IntegrationSagaHistory
-        ), f"Expected IntegrationSagaHistory, got {type(rehydrated_entry)}"
+        assert isinstance(rehydrated_entry, IntegrationSagaHistory), (
+            f"Expected IntegrationSagaHistory, got {type(rehydrated_entry)}"
+        )
 
         assert rehydrated_entry.step_id == "test_step_orm"
         assert rehydrated_entry.status == SagaStepStatus.SUCCESS
