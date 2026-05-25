@@ -1,7 +1,8 @@
-from enum import StrEnum, auto
+from enum import auto
 
+from . import BaseStrEnum
 
-class SagaStepStatus(StrEnum):
+class SagaStepStatus(BaseStrEnum):
     SUCCESS = auto()
     ERROR = auto()
     WAITING = auto()
