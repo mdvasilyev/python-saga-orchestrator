@@ -119,18 +119,23 @@ class BaseStep(Generic[InputModelT, OutputModelT]):
 
         concrete_args = get_args(generic_base)
         if not concrete_args or any(isinstance(arg, TypeVar) for arg in concrete_args):
-            raise TypeValidationError(f"Step '{cls.__name__}' inherits from a generic Step "
-                                      "but was not parameterized with concrete Input/Output models.")
+            raise TypeValidationError(
+                f"Step '{cls.__name__}' inherits from a generic Step "
+                "but was not parameterized with concrete Input/Output models."
+            )
 
         concrete_input_model, concrete_output_model = concrete_args
         try:
-            hints = get_type_hints(cls.execute, globalns=inspect.getmodule(cls).__dict__, include_extras=True)
+            hints = get_type_hints(
+                cls.execute,
+                globalns=inspect.getmodule(cls).__dict__,
+                include_extras=True,
+            )
         except (AttributeError, NameError) as e:
-             raise TypeValidationError(
+            raise TypeValidationError(
                 f"Could not resolve type hints for '{cls.__name__}.execute'. "
                 f"Ensure all types are correctly imported. Original error: {e}"
             )
-
 
         if "inp" not in hints or "return" not in hints:
             raise TypeValidationError(
@@ -144,7 +149,9 @@ class BaseStep(Generic[InputModelT, OutputModelT]):
             input_model = input_annotation
 
         return_annotation = hints["return"]
-        output_model = cls._resolve_output_model(return_annotation, concrete_output_model)
+        output_model = cls._resolve_output_model(
+            return_annotation, concrete_output_model
+        )
         if not (inspect.isclass(input_model) and issubclass(input_model, BaseModel)):
             raise TypeValidationError(
                 f"Step '{cls.__name__}' input must inherit from pydantic BaseModel"
@@ -153,7 +160,9 @@ class BaseStep(Generic[InputModelT, OutputModelT]):
         cls.output_model = output_model
 
     @staticmethod
-    def _resolve_output_model(annotation: Any, concrete_model: type[BaseModel] | None = None) -> type[BaseModel]:
+    def _resolve_output_model(
+        annotation: Any, concrete_model: type[BaseModel] | None = None
+    ) -> type[BaseModel]:
         def find_model_in_args(args_tuple: tuple) -> list[type[BaseModel]]:
             candidates = []
             for arg in args_tuple:

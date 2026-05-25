@@ -1,6 +1,7 @@
 from enum import auto
 
-from . import BaseStrEnum
+from .base_str_enum import BaseStrEnum
+
 
 class SagaStepStatus(BaseStrEnum):
     SUCCESS = auto()

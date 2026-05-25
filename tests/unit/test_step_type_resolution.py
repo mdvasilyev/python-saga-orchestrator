@@ -40,7 +40,6 @@ class StepAwaitEvent:
     event_types: tuple[str, ...] | None = None
 
 
-
 IntermediateInputT = TypeVar("IntermediateInputT", bound=BaseModel)
 IntermediateOutputT = TypeVar("IntermediateOutputT", bound=BaseModel)
 
@@ -48,18 +47,19 @@ IntermediateOutputT = TypeVar("IntermediateOutputT", bound=BaseModel)
 class AbstractIntermediateStep(
     BaseStep[IntermediateInputT, IntermediateOutputT],
     ABC,
-    Generic[IntermediateInputT, IntermediateOutputT]
+    Generic[IntermediateInputT, IntermediateOutputT],
 ):
     @abstractmethod
     def some_abstract_method(self):
         pass
 
-    async def execute(self, inp: IntermediateInputT) -> IntermediateOutputT | StepAwaitEvent:
+    async def execute(
+        self, inp: IntermediateInputT
+    ) -> IntermediateOutputT | StepAwaitEvent:
         pass
 
 
 class TestTypeResolution:
-
     def test_indirect_inheritance_resolves_types_correctly(self):
         """
         GIVEN a concrete step class inheriting from a generic abstract step
@@ -97,6 +97,7 @@ class TestTypeResolution:
         THEN TypeValidationError should be raised.
         """
         with pytest.raises(TypeValidationError, match="must type annotate execute"):
+
             class FaultyStep(BaseStep[InputModelA, OutputModelA]):
                 # `inp` не аннотирован
                 async def execute(self, inp) -> OutputModelA:
@@ -114,6 +115,7 @@ class TestTypeResolution:
             pass
 
         with pytest.raises(TypeValidationError, match="Could not resolve type hints"):
+
             class FaultyStep(BaseStep[InputModelA, OutputModelA]):
                 async def execute(self, inp: NotAModel) -> OutputModelA:
                     pass
@@ -124,7 +126,11 @@ class TestTypeResolution:
         WHEN the class is defined
         THEN TypeValidationError should be raised by our custom logic.
         """
-        with pytest.raises(TypeValidationError, match="inherits from a generic Step but was not parameterized with concrete Input/Output models"):
+        with pytest.raises(
+            TypeValidationError,
+            match="inherits from a generic Step but was not parameterized with concrete Input/Output models",
+        ):
+
             class UnparameterizedStep(AbstractIntermediateStep):
                 def some_abstract_method(self):
                     pass
