@@ -58,7 +58,7 @@ async def test_admin_retry_rejects_failed_saga_after_compensation(session_maker)
     )
     state = await admin.get_saga(saga_id)
     assert state.status == SagaStatus.COMPENSATED
-    assert any(entry.phase == "compensate" for entry in state.step_history)
+    assert any(entry.phase == "COMPENSATE" for entry in state.step_history)
 
     with pytest.raises(SagaStateError):
         await admin.retry_step(saga_id)
@@ -150,7 +150,7 @@ async def test_admin_compensate_rolls_back_suspended_saga(session_maker):
     state_after = await admin.get_saga(saga_id)
     assert state_after.status == SagaStatus.COMPENSATED
     assert compensating_step.compensated is True
-    assert any(entry.phase == "compensate" for entry in state_after.step_history)
+    assert any(entry.phase == "COMPENSATE" for entry in state_after.step_history)
 
 
 @pytest.mark.asyncio
@@ -225,7 +225,7 @@ async def test_get_admin_snapshot_returns(session_maker):
     assert isinstance(admin_snapshot.step_history, list)
     assert len(admin_snapshot.step_history) == 1
     assert admin_snapshot.step_history[0].step_name == "AddOneStep"
-    assert admin_snapshot.step_history[0].status == "success"
+    assert admin_snapshot.step_history[0].status == "SUCCESS"
 
 
 @pytest.mark.asyncio

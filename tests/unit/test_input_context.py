@@ -81,6 +81,6 @@ def test_input_context_properties_parametrized(
     )
 
     assert input_ctx.latest_event_type == expected_type, f"Failed on test: {test_id}"
-    assert (
-        input_ctx.latest_event_payload == expected_payload
-    ), f"Failed on test: {test_id}"
+    assert input_ctx.latest_event_payload == expected_payload, (
+        f"Failed on test: {test_id}"
+    )

@@ -1,7 +1,9 @@
-from enum import StrEnum, auto
+from enum import auto
+
+from .base_str_enum import BaseStrEnum
 
 
-class SagaStepPhase(StrEnum):
+class SagaStepPhase(BaseStrEnum):
     COMPENSATE = auto()
     SUCCESS = auto()
     EXECUTE = auto()
