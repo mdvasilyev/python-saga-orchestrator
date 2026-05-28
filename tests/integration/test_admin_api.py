@@ -1,5 +1,3 @@
-# tests/integration/test_admin_api.py
-
 from __future__ import annotations
 
 import asyncio
@@ -7,7 +5,7 @@ from datetime import timedelta
 
 import pytest
 
-from saga_orchestrator import SagaAdmin, SagaBuilder
+from saga_orchestrator import SagaAdmin, SagaBuilder, SagaStepStatus
 from saga_orchestrator.core.orchestrator import SagaOrchestrator
 from saga_orchestrator.domain.exceptions import SagaStateError
 from saga_orchestrator.domain.models import ExponentialRetry
@@ -23,6 +21,7 @@ from tests.integration.helpers import (
     StartInput,
     StartOutput,
     WaitingStep,
+    WaitingWithTimeoutStep,
 )
 from tests.integration.models import IntegrationSagaHistory, IntegrationSagaState
 
@@ -307,3 +306,91 @@ async def test_can_retry_step_on_forward_failure_without_compensation(session_ma
     state_after = await admin.get_saga(saga_id)
     assert state_after.status == SagaStatus.COMPLETED
     assert fails_once_step.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_admin_abort_adds_history_entry(session_maker):
+    """
+    Проверяет, что вызов admin.abort() добавляет запись об ошибке в историю шага.
+    """
+    builder = SagaBuilder()
+    builder.add_step(
+        step=WaitingWithTimeoutStep(),
+        input_map=lambda ctx: StartInput(value=ctx.initial_data["value"]),
+        retry_policy=ExponentialRetry(max_attempts=1, base_delay=timedelta(hours=1)),
+    )
+
+    orchestrator = SagaOrchestrator[IntegrationSagaState, IntegrationSagaHistory](
+        model_class=IntegrationSagaState,
+        history_model_class=IntegrationSagaHistory,
+        session_maker=session_maker,
+    )
+    admin = SagaAdmin[IntegrationSagaState, IntegrationSagaHistory](
+        engine=orchestrator.engine
+    )
+    orchestrator.register("abort-test", builder.build())
+
+    saga_id = await orchestrator.start(
+        saga_name="abort-test",
+        initial_data={"value": 1},
+        aggregation_id="agg-abort-test",
+    )
+
+    state_before = await admin.get_saga(saga_id)
+    assert state_before.status == SagaStatus.SUSPENDED
+    assert len(state_before.step_history) == 1
+    await admin.abort(saga_id)
+
+    state_after = await admin.get_saga(saga_id)
+    assert state_after.status == SagaStatus.FAILED
+    assert state_after.last_error == "Aborted by admin"
+    assert len(state_after.step_history) == 2
+
+    abort_entry = state_after.step_history[-1]
+    assert abort_entry.status == SagaStepStatus.ERROR
+    assert abort_entry.error == "Aborted by admin"
+    assert abort_entry.skipped is True
+    assert abort_entry.input == {"_admin": "abort"}
+
+
+@pytest.mark.asyncio
+async def test_admin_retry_step_from_timed_out_status(session_maker):
+    """
+    Проверяет, что можно перезапустить шаг из статуса TIMED_OUT.
+    """
+    builder = SagaBuilder()
+    builder.add_step(
+        step=WaitingWithTimeoutStep(),
+        input_map=lambda ctx: StartInput(value=ctx.initial_data["value"]),
+    )
+
+    orchestrator = SagaOrchestrator[IntegrationSagaState, IntegrationSagaHistory](
+        model_class=IntegrationSagaState,
+        history_model_class=IntegrationSagaHistory,
+        session_maker=session_maker,
+    )
+    admin = SagaAdmin[IntegrationSagaState, IntegrationSagaHistory](
+        engine=orchestrator.engine
+    )
+    orchestrator.register("retry-from-timeout", builder.build())
+
+    saga_id = await orchestrator.start(
+        saga_name="retry-from-timeout",
+        initial_data={"value": 1},
+        aggregation_id="agg-retry-from-timeout",
+    )
+    await asyncio.sleep(0.1)
+    await orchestrator.run_due()
+
+    state_before = await admin.get_saga(saga_id)
+    assert state_before.status == SagaStatus.TIMED_OUT
+    assert len(state_before.step_history) == 2
+    assert state_before.step_history[0].status == SagaStepStatus.WAITING
+    assert state_before.step_history[1].status == SagaStepStatus.TIMED_OUT
+    await admin.retry_step(saga_id)
+    state_after = await admin.get_saga(saga_id)
+    assert state_after.status == SagaStatus.SUSPENDED
+    assert state_after.retry_counter == 0
+
+    assert len(state_after.step_history) == 3
+    assert state_after.step_history[2].status == SagaStepStatus.WAITING

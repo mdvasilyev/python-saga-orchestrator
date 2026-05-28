@@ -139,7 +139,7 @@ class SagaRepository(Generic[ModelT]):
     ) -> list[ModelT]:
         """Return due saga rows for one status ordered by deadline."""
         stmt = (
-            select(self.model_class)
+            self._base_query()
             .where(
                 self.model_class.status == status,
                 self.model_class.deadline_at.is_not(None),
