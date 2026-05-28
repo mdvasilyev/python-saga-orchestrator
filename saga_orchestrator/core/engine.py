@@ -463,11 +463,44 @@ class SagaEngine(Generic[ModelT, HistoryModelT]):
                     )
                 )
 
-                for saga in [*due_running, *due_suspended]:
+                for saga in due_running:
                     saga.status = SagaStatus.RUNNING
                     saga.step_execution_token = uuid.uuid4()
                     saga.deadline_at = now + self._execution_lease
                     ready_ids.append(saga.id)
+
+                for saga in due_suspended:
+                    context: SagaContext = saga.context
+                    if context.awaiting_event_type or context.awaiting_event_types:
+                        saga.status = SagaStatus.TIMED_OUT
+                        saga.last_error = f"Timed out waiting for event(s): {context.awaiting_event_types or context.awaiting_event_type}"
+                        saga.deadline_at = None
+                        saga.step_execution_token = uuid.uuid4()
+
+                        saga_name = context.saga_name
+                        definition = self._registry[saga_name]
+                        step_def = definition.steps[saga.current_step_index]
+
+                        saga.step_history.append(
+                            self._history_model_class(
+                                timestamp=now,
+                                phase=SagaStepPhase.EXECUTE,
+                                status=SagaStepStatus.TIMED_OUT,
+                                step_id=step_def.step_id,
+                                step_name=type(step_def.step).__name__,
+                                attempt=saga.retry_counter + 1,
+                                token=saga.step_execution_token,
+                                input={"_system": "timeout"},
+                                output=None,
+                                error=saga.last_error,
+                                skipped=False,
+                            )
+                        )
+                    else:
+                        saga.status = SagaStatus.RUNNING
+                        saga.step_execution_token = uuid.uuid4()
+                        saga.deadline_at = now + self._execution_lease
+                        ready_ids.append(saga.id)
 
                 for saga in [*due_compensating, *due_compensating_suspended]:
                     saga.status = SagaStatus.COMPENSATING
@@ -533,7 +566,11 @@ class SagaEngine(Generic[ModelT, HistoryModelT]):
         async with self._session_maker() as session:
             async with session.begin():
                 saga = await self._repository.get_for_update(session, saga_id)
-                if saga.status not in {SagaStatus.SUSPENDED, SagaStatus.FAILED}:
+                if saga.status not in {
+                    SagaStatus.SUSPENDED,
+                    SagaStatus.FAILED,
+                    SagaStatus.TIMED_OUT,
+                }:
                     raise SagaStateError(
                         f"Cannot retry step when saga status is {saga.status}"
                     )
@@ -595,9 +632,37 @@ class SagaEngine(Generic[ModelT, HistoryModelT]):
         async with self._session_maker() as session:
             async with session.begin():
                 saga = await self._repository.get_for_update(session, saga_id)
+                error_message = saga.last_error or "Aborted by admin"
+
+                try:
+                    saga_name = saga.context.saga_name
+                    definition = self._registry[saga_name]
+                    step_def = definition.steps[saga.current_step_index]
+                    step_id = step_def.step_id
+                    step_name = type(step_def.step).__name__
+                except (KeyError, IndexError):
+                    step_id = "__unknown__"
+                    step_name = "Unknown"
+
+                saga.step_history.append(
+                    self._history_model_class(
+                        timestamp=datetime.now(UTC),
+                        phase=SagaStepPhase.EXECUTE,
+                        status=SagaStepStatus.ERROR,
+                        step_id=step_id,
+                        step_name=step_name,
+                        attempt=saga.retry_counter + 1,
+                        token=saga.step_execution_token,
+                        input={"_admin": "abort"},
+                        output=None,
+                        error=error_message,
+                        skipped=True,
+                    )
+                )
+
                 saga.status = SagaStatus.FAILED
                 saga.deadline_at = None
-                saga.last_error = saga.last_error or "Aborted by admin"
+                saga.last_error = error_message
                 saga.step_execution_token = uuid.uuid4()
 
     async def skip_step(

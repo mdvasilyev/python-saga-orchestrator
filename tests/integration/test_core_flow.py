@@ -5,7 +5,7 @@ from datetime import timedelta
 
 import pytest
 
-from saga_orchestrator import SagaAdmin, SagaBuilder
+from saga_orchestrator import SagaAdmin, SagaBuilder, SagaStepPhase, SagaStepStatus
 from saga_orchestrator.core.orchestrator import SagaOrchestrator
 from saga_orchestrator.domain.exceptions import ActiveSagaAlreadyExistsError
 from saga_orchestrator.domain.models import ExponentialRetry
@@ -26,6 +26,7 @@ from tests.integration.helpers import (
     ReserveQueueInput,
     ReserveQueueStep,
     StartInput,
+    WaitingWithTimeoutStep,
 )
 from tests.integration.models import (
     IntegrationOutboxMessage,
@@ -398,3 +399,50 @@ async def test_get_snapshot_returns(session_maker):
     assert snapshot.current_step_index == 1
     assert snapshot.deadline_at is None
     assert snapshot.last_error is None
+
+
+@pytest.mark.asyncio
+async def test_timed_out_status_on_await_event_deadline(session_maker):
+    """
+    Проверяет, что сага переходит в статус TIMED_OUT, если истекает время ожидания события.
+    """
+    builder = SagaBuilder()
+    builder.add_step(
+        step=WaitingWithTimeoutStep(),
+        input_map=lambda ctx: StartInput(value=ctx.initial_data["value"]),
+    )
+
+    orchestrator = SagaOrchestrator[IntegrationSagaState, IntegrationSagaHistory](
+        model_class=IntegrationSagaState,
+        history_model_class=IntegrationSagaHistory,
+        session_maker=session_maker,
+    )
+    admin = SagaAdmin[IntegrationSagaState, IntegrationSagaHistory](
+        engine=orchestrator.engine
+    )
+    orchestrator.register("await-timeout", builder.build())
+    saga_id = await orchestrator.start(
+        saga_name="await-timeout",
+        initial_data={"value": 1},
+        aggregation_id="agg-await-timeout",
+    )
+
+    state_before = await admin.get_saga(saga_id)
+    assert state_before.status == SagaStatus.SUSPENDED
+    assert state_before.deadline_at is not None
+
+    await asyncio.sleep(0.1)
+    resumed = await orchestrator.run_due()
+    assert resumed == 0
+    state_after = await admin.get_saga(saga_id)
+    assert state_after.status == SagaStatus.TIMED_OUT
+    assert "Timed out waiting for event" in state_after.last_error
+    assert state_after.deadline_at is None
+
+    assert len(state_after.step_history) == 2
+    assert state_after.step_history[0].status == SagaStepStatus.WAITING
+    assert state_after.step_history[0].phase == SagaStepPhase.EXECUTE
+    assert not state_after.step_history[0].error
+    assert state_after.step_history[1].status == SagaStepStatus.TIMED_OUT
+    assert state_after.step_history[1].phase == SagaStepPhase.EXECUTE
+    assert "Timed out" in state_after.step_history[1].error

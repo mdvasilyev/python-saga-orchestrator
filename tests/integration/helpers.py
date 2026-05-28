@@ -324,7 +324,14 @@ class WaitingStep(BaseStep[NextInput, NextOutput]):
         raise RuntimeError("pending approval")
 
 
-# --- Hook Helper Models & Functions ---
+class WaitingWithTimeoutStep(BaseStep[StartInput, StartOutput]):
+    """Шаг, который всегда ждет события с небольшим таймаутом."""
+
+    async def execute(self, inp: StartInput) -> StepAwaitEvent | StartOutput:
+        return StepAwaitEvent(
+            event_types=("some.event",),
+            until=timedelta(milliseconds=10),
+        )
 
 
 class SagaStartedEvent(BaseModel):
