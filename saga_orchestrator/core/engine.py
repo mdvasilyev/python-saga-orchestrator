@@ -505,7 +505,7 @@ class SagaEngine(Generic[ModelT, HistoryModelT]):
         context = saga.context
         event_types = context.awaiting_event_types or context.awaiting_event_type
 
-        saga.status = SagaStatus.TIMED_OUT
+        saga.status = SagaStatus.TIMEOUT
         saga.last_error = f"Timed out waiting for event(s): {event_types}"
         saga.deadline_at = None
         saga.step_execution_token = uuid.uuid4()
@@ -517,7 +517,7 @@ class SagaEngine(Generic[ModelT, HistoryModelT]):
             self._history_model_class(
                 timestamp=now,
                 phase=SagaStepPhase.EXECUTE,
-                status=SagaStepStatus.TIMED_OUT,
+                status=SagaStepStatus.TIMEOUT,
                 step_id=step_def.step_id,
                 step_name=type(step_def.step).__name__,
                 attempt=saga.retry_counter + 1,
@@ -584,7 +584,7 @@ class SagaEngine(Generic[ModelT, HistoryModelT]):
                 if saga.status not in {
                     SagaStatus.SUSPENDED,
                     SagaStatus.FAILED,
-                    SagaStatus.TIMED_OUT,
+                    SagaStatus.TIMEOUT,
                 }:
                     raise SagaStateError(
                         f"Cannot retry step when saga status is {saga.status}"
