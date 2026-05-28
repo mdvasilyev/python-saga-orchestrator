@@ -404,7 +404,7 @@ async def test_get_snapshot_returns(session_maker):
 @pytest.mark.asyncio
 async def test_timed_out_status_on_await_event_deadline(session_maker):
     """
-    Проверяет, что сага переходит в статус TIMED_OUT, если истекает время ожидания события.
+    Проверяет, что сага переходит в статус TIMEOUT, если истекает время ожидания события.
     """
     builder = SagaBuilder()
     builder.add_step(
@@ -435,7 +435,7 @@ async def test_timed_out_status_on_await_event_deadline(session_maker):
     resumed = await orchestrator.run_due()
     assert resumed == 0
     state_after = await admin.get_saga(saga_id)
-    assert state_after.status == SagaStatus.TIMED_OUT
+    assert state_after.status == SagaStatus.TIMEOUT
     assert "Timed out waiting for event" in state_after.last_error
     assert state_after.deadline_at is None
 
@@ -443,6 +443,6 @@ async def test_timed_out_status_on_await_event_deadline(session_maker):
     assert state_after.step_history[0].status == SagaStepStatus.WAITING
     assert state_after.step_history[0].phase == SagaStepPhase.EXECUTE
     assert not state_after.step_history[0].error
-    assert state_after.step_history[1].status == SagaStepStatus.TIMED_OUT
+    assert state_after.step_history[1].status == SagaStepStatus.TIMEOUT
     assert state_after.step_history[1].phase == SagaStepPhase.EXECUTE
     assert "Timed out" in state_after.step_history[1].error

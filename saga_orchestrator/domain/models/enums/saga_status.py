@@ -11,7 +11,7 @@ class SagaStatus(BaseStrEnum):
     COMPLETED = auto()
     COMPENSATING_SUSPENDED = auto()
     COMPENSATED = auto()
-    TIMED_OUT = auto()
+    TIMEOUT = auto()
 
     @property
     def is_terminal(self) -> bool:

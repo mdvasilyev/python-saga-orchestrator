@@ -356,7 +356,7 @@ async def test_admin_abort_adds_history_entry(session_maker):
 @pytest.mark.asyncio
 async def test_admin_retry_step_from_timed_out_status(session_maker):
     """
-    Проверяет, что можно перезапустить шаг из статуса TIMED_OUT.
+    Проверяет, что можно перезапустить шаг из статуса TIMEOUT.
     """
     builder = SagaBuilder()
     builder.add_step(
@@ -383,10 +383,10 @@ async def test_admin_retry_step_from_timed_out_status(session_maker):
     await orchestrator.run_due()
 
     state_before = await admin.get_saga(saga_id)
-    assert state_before.status == SagaStatus.TIMED_OUT
+    assert state_before.status == SagaStatus.TIMEOUT
     assert len(state_before.step_history) == 2
     assert state_before.step_history[0].status == SagaStepStatus.WAITING
-    assert state_before.step_history[1].status == SagaStepStatus.TIMED_OUT
+    assert state_before.step_history[1].status == SagaStepStatus.TIMEOUT
     await admin.retry_step(saga_id)
     state_after = await admin.get_saga(saga_id)
     assert state_after.status == SagaStatus.SUSPENDED

@@ -7,4 +7,4 @@ class SagaStepStatus(BaseStrEnum):
     SUCCESS = auto()
     ERROR = auto()
     WAITING = auto()
-    TIMED_OUT = auto()
+    TIMEOUT = auto()
