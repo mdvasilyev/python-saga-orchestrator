@@ -444,75 +444,78 @@ class SagaEngine(Generic[ModelT, HistoryModelT]):
 
         async with self._session_maker() as session:
             async with session.begin():
-                due_running = await self._repository.due_running(
-                    session, now=now, limit=limit
-                )
-                remaining = max(limit - len(due_running), 0)
-                due_suspended = await self._repository.due_suspended(
-                    session, now=now, limit=remaining
-                )
-                remaining -= len(due_suspended)
-                due_compensating = await self._repository.due_compensating(
-                    session, now=now, limit=remaining
-                )
-                remaining -= len(due_compensating)
+                sagas_running = await self._repository.due_running(session, now=now, limit=limit)
+                limit = max(0, limit - len(sagas_running))
 
-                due_compensating_suspended = (
-                    await self._repository.due_compensating_suspended(
-                        session, now=now, limit=max(remaining, 0)
-                    )
-                )
+                sagas_suspended = await self._repository.due_suspended(session, now=now, limit=limit)
+                limit = max(0, limit - len(sagas_suspended))
 
-                for saga in due_running:
-                    saga.status = SagaStatus.RUNNING
-                    saga.step_execution_token = uuid.uuid4()
-                    saga.deadline_at = now + self._execution_lease
+                sagas_compensating = await self._repository.due_compensating(session, now=now, limit=limit)
+                limit = max(0, limit - len(sagas_compensating))
+
+                sagas_comp_suspended = await self._repository.due_compensating_suspended(session, now=now, limit=limit)
+
+                for saga in sagas_running:
+                    self._prepare_saga_for_resume(saga, SagaStatus.RUNNING, now)
                     ready_ids.append(saga.id)
 
-                for saga in due_suspended:
-                    context: SagaContext = saga.context
-                    if context.awaiting_event_type or context.awaiting_event_types:
-                        saga.status = SagaStatus.TIMED_OUT
-                        saga.last_error = f"Timed out waiting for event(s): {context.awaiting_event_types or context.awaiting_event_type}"
-                        saga.deadline_at = None
-                        saga.step_execution_token = uuid.uuid4()
-
-                        saga_name = context.saga_name
-                        definition = self._registry[saga_name]
-                        step_def = definition.steps[saga.current_step_index]
-
-                        saga.step_history.append(
-                            self._history_model_class(
-                                timestamp=now,
-                                phase=SagaStepPhase.EXECUTE,
-                                status=SagaStepStatus.TIMED_OUT,
-                                step_id=step_def.step_id,
-                                step_name=type(step_def.step).__name__,
-                                attempt=saga.retry_counter + 1,
-                                token=saga.step_execution_token,
-                                input={"_system": "timeout"},
-                                output=None,
-                                error=saga.last_error,
-                                skipped=False,
-                            )
-                        )
+                for saga in sagas_suspended:
+                    if self._is_waiting_for_events(saga):
+                        self._handle_saga_timeout(saga, now)
                     else:
-                        saga.status = SagaStatus.RUNNING
-                        saga.step_execution_token = uuid.uuid4()
-                        saga.deadline_at = now + self._execution_lease
+                        self._prepare_saga_for_resume(saga, SagaStatus.RUNNING, now)
                         ready_ids.append(saga.id)
 
-                for saga in [*due_compensating, *due_compensating_suspended]:
-                    saga.status = SagaStatus.COMPENSATING
-                    saga.step_execution_token = uuid.uuid4()
-                    saga.deadline_at = now + self._execution_lease
+                for saga in [*sagas_compensating, *sagas_comp_suspended]:
+                    self._prepare_saga_for_resume(saga, SagaStatus.COMPENSATING, now)
                     compensation_ids.append(saga.id)
 
         for saga_id in ready_ids:
             await self._drive(saga_id)
         for saga_id in compensation_ids:
             await self._run_compensation(saga_id)
+
         return len(ready_ids) + len(compensation_ids)
+
+    def _prepare_saga_for_resume(self, saga, status: 'SagaStatus', now: datetime) -> None:
+        """Устанавливает общие поля для продолжения работы саги."""
+        saga.status = status
+        saga.step_execution_token = uuid.uuid4()
+        saga.deadline_at = now + self._execution_lease
+
+    def _is_waiting_for_events(self, saga) -> bool:
+        """Проверяет, ожидает ли сага внешних событий."""
+        context = saga.context
+        return bool(context.awaiting_event_type or context.awaiting_event_types)
+
+    def _handle_saga_timeout(self, saga, now: datetime) -> None:
+        """логика обработки таймаута ожидания событий."""
+        context = saga.context
+        event_types = context.awaiting_event_types or context.awaiting_event_type
+
+        saga.status = SagaStatus.TIMED_OUT
+        saga.last_error = f"Timed out waiting for event(s): {event_types}"
+        saga.deadline_at = None
+        saga.step_execution_token = uuid.uuid4()
+
+        definition = self._registry[context.saga_name]
+        step_def = definition.steps[saga.current_step_index]
+
+        saga.step_history.append(
+            self._history_model_class(
+                timestamp=now,
+                phase=SagaStepPhase.EXECUTE,
+                status=SagaStepStatus.TIMED_OUT,
+                step_id=step_def.step_id,
+                step_name=type(step_def.step).__name__,
+                attempt=saga.retry_counter + 1,
+                token=saga.step_execution_token,
+                input={"_system": "timeout"},
+                output=None,
+                error=saga.last_error,
+                skipped=False,
+            )
+        )
 
     async def get_snapshot(self, saga_id: UUID) -> SagaSnapshot:
         """Return the snapshot view of one saga."""
