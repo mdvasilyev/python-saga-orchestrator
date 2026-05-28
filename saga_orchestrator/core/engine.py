@@ -444,16 +444,26 @@ class SagaEngine(Generic[ModelT, HistoryModelT]):
 
         async with self._session_maker() as session:
             async with session.begin():
-                sagas_running = await self._repository.due_running(session, now=now, limit=limit)
+                sagas_running = await self._repository.due_running(
+                    session, now=now, limit=limit
+                )
                 limit = max(0, limit - len(sagas_running))
 
-                sagas_suspended = await self._repository.due_suspended(session, now=now, limit=limit)
+                sagas_suspended = await self._repository.due_suspended(
+                    session, now=now, limit=limit
+                )
                 limit = max(0, limit - len(sagas_suspended))
 
-                sagas_compensating = await self._repository.due_compensating(session, now=now, limit=limit)
+                sagas_compensating = await self._repository.due_compensating(
+                    session, now=now, limit=limit
+                )
                 limit = max(0, limit - len(sagas_compensating))
 
-                sagas_comp_suspended = await self._repository.due_compensating_suspended(session, now=now, limit=limit)
+                sagas_comp_suspended = (
+                    await self._repository.due_compensating_suspended(
+                        session, now=now, limit=limit
+                    )
+                )
 
                 for saga in sagas_running:
                     self._prepare_saga_for_resume(saga, SagaStatus.RUNNING, now)
@@ -477,7 +487,9 @@ class SagaEngine(Generic[ModelT, HistoryModelT]):
 
         return len(ready_ids) + len(compensation_ids)
 
-    def _prepare_saga_for_resume(self, saga, status: 'SagaStatus', now: datetime) -> None:
+    def _prepare_saga_for_resume(
+        self, saga, status: "SagaStatus", now: datetime
+    ) -> None:
         """Устанавливает общие поля для продолжения работы саги."""
         saga.status = status
         saga.step_execution_token = uuid.uuid4()
