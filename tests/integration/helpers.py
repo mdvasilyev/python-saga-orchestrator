@@ -333,6 +333,19 @@ class WaitingWithTimeoutStep(BaseStep[StartInput, StartOutput]):
             until=timedelta(milliseconds=10),
         )
 
+class RetryWaitInput(BaseModel):
+    value: int
+    event_type: str | None = None
+
+class RetryWaitStep(BaseStep[RetryWaitInput, StartOutput]):
+    async def execute(self, inp: RetryWaitInput) -> StepAwaitEvent | StartOutput:
+        if inp.event_type is None:
+            return StepAwaitEvent(
+                event_types=("some.event",),
+                until=timedelta(milliseconds=10),
+            )
+        return StartOutput(value=inp.value + 1)
+
 
 class SagaStartedEvent(BaseModel):
     saga_id: uuid.UUID
