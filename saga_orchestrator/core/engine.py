@@ -1046,6 +1046,7 @@ class SagaEngine(Generic[ModelT, HistoryModelT]):
                 )
 
                 saga.last_error = repr(error)
+                context.clear_latest_event()
                 next_attempt = saga.retry_counter + 1
                 delay = step_def.retry_policy.next_delay(next_attempt)
                 saga.retry_counter = next_attempt

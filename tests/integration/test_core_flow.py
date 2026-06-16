@@ -23,11 +23,15 @@ from tests.integration.helpers import (
     ActivateQueueStep,
     AddOneStep,
     AlwaysFailStep,
+    AsyncFailInput,
+    AsyncFailStep,
+    CompensateEventTrackerStep,
     CompensatingStep,
     FailsOnceStep,
     FlakyStep,
     HttpInput,
     HttpStep,
+    LeakTrackInput,
     NextInput,
     RecoverableStep,
     ReserveQueueInput,
@@ -560,3 +564,62 @@ async def test_retry_after_timeout_processes_successfully(session_maker):
 
     final_state = await admin.get_saga(saga_id)
     assert final_state.status == SagaStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_event_does_not_leak_into_compensation_after_failure(session_maker):
+    """
+    Проверяет, что если шаг упал после пробуждения от события,
+    это событие очищается и не 'протекает' в компенсацию предыдущих шагов.
+    """
+    tracker_step = CompensateEventTrackerStep()
+    fail_step = AsyncFailStep()
+
+    builder = SagaBuilder()
+    step1_ref = builder.add_step(
+        step=tracker_step,
+        input_map=lambda ctx: LeakTrackInput(value=ctx.initial_data["correlation"]),
+    )
+    builder.add_step(
+        step=fail_step,
+        depends_on=step1_ref,
+        input_map=lambda out: AsyncFailInput(value=out.value),
+    )
+
+    orchestrator = SagaOrchestrator[IntegrationSagaState, IntegrationSagaHistory](
+        model_class=IntegrationSagaState,
+        history_model_class=IntegrationSagaHistory,
+        session_maker=session_maker,
+    )
+    admin = SagaAdmin[IntegrationSagaState, IntegrationSagaHistory](
+        engine=orchestrator.engine
+    )
+    orchestrator.register("leak_test_saga", builder.build())
+
+    saga_id = await orchestrator.start(
+        saga_name="leak_test_saga",
+        initial_data={"correlation": "corr-leak-123"},
+        aggregation_id="agg-leak-test",
+    )
+
+    state1 = await admin.get_saga(saga_id)
+    assert state1.status == SagaStatus.SUSPENDED
+    assert state1.current_step_index == 1
+
+    await orchestrator.notify(
+        saga_id=saga_id,
+        token=state1.step_execution_token,
+        event=NotifyEvent(
+            event_id="evt-leak",
+            event_type="fail.event",
+            correlation_id="corr-leak-123",
+            payload={"reason": "fatal error"},
+        ),
+    )
+
+    final_state = await admin.get_saga(saga_id)
+    assert final_state.status == SagaStatus.COMPENSATED
+
+    assert tracker_step.compensate_event_type is None, (
+        f"Event leaked into compensation! Expected None, got: {tracker_step.compensate_event_type}"
+    )
