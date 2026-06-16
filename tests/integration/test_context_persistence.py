@@ -7,6 +7,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from saga_orchestrator import SagaStateMixin
 from saga_orchestrator.domain.models.context import SagaContext
 from saga_orchestrator.domain.models.enums import SagaStepPhase, SagaStepStatus
 from tests.integration.helpers import StartInput
@@ -70,12 +71,16 @@ async def test_top_level_attribute_change_is_persisted(session_maker):
 
     async with session_maker() as session:
         saga = await session.get(IntegrationSagaState, saga_id)
-        saga.context.awaiting_event_type = new_awaiting_type
+        saga.context.awaiting_event_types = (new_awaiting_type,)
         await session.commit()
 
     async with session_maker() as session:
-        reloaded_saga = await session.get(IntegrationSagaState, saga_id)
-        assert reloaded_saga.context.awaiting_event_type == new_awaiting_type
+        reloaded_saga: SagaStateMixin | None = await session.get(
+            IntegrationSagaState, saga_id
+        )
+        assert reloaded_saga is not None
+        assert len(reloaded_saga.context.awaiting_event_types) == 1
+        assert new_awaiting_type in reloaded_saga.context.awaiting_event_types
 
 
 @pytest.mark.asyncio

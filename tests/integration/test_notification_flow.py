@@ -5,7 +5,7 @@ from datetime import timedelta
 
 import pytest
 
-from saga_orchestrator import SagaAdmin, SagaBuilder
+from saga_orchestrator import SagaAdmin, SagaAdminSnapshot, SagaBuilder
 from saga_orchestrator.core.orchestrator import SagaOrchestrator
 from saga_orchestrator.domain.models import ExponentialRetry
 from saga_orchestrator.domain.models.enums import SagaStatus
@@ -94,12 +94,13 @@ async def test_await_event_configures_wait_contract(session_maker):
         ),
     )
 
-    state_after = await admin.get_saga(saga_id)
+    state_after: SagaAdminSnapshot = await admin.get_saga(saga_id)
     assert state_after.status == SagaStatus.SUSPENDED
     assert state_after.step_execution_token == new_token
     assert state_after.step_execution_token != state_before.step_execution_token
     assert state_after.deadline_at is None
-    assert state_after.context.awaiting_event_type == "model.approved"
+    assert len(state_after.context.awaiting_event_types) == 1
+    assert "model.approved" in state_after.context.awaiting_event_types
     assert state_after.context.awaiting_correlation_id == "corr-await"
     assert state_after.context.awaiting_until == "2999-01-01T00:00:00+00:00"
 

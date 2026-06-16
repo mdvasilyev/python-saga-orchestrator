@@ -261,36 +261,19 @@ class SagaEngine(Generic[ModelT, HistoryModelT]):
                     return NotifyResult.DUPLICATE
 
                 expected_types: tuple[str, ...] = context.awaiting_event_types
-                expected_type: str | None = context.awaiting_event_type
-                if normalized_event is None and (
-                    expected_type is not None
-                    or (
-                        isinstance(expected_types, (list, tuple))
-                        and len(expected_types) > 0
-                    )
-                ):
+
+                if normalized_event is None and expected_types:
                     self._append_notify_log(
                         saga=saga,
                         event=normalized_event,
                         result=NotifyResult.EVENT_TYPE_MISMATCH,
                     )
                     return NotifyResult.EVENT_TYPE_MISMATCH
+
                 if (
                     normalized_event is not None
-                    and isinstance(expected_types, (list, tuple))
                     and expected_types
                     and normalized_event.event_type not in expected_types
-                ):
-                    self._append_notify_log(
-                        saga=saga,
-                        event=normalized_event,
-                        result=NotifyResult.EVENT_TYPE_MISMATCH,
-                    )
-                    return NotifyResult.EVENT_TYPE_MISMATCH
-                if (
-                    expected_type is not None
-                    and normalized_event is not None
-                    and normalized_event.event_type != expected_type
                 ):
                     self._append_notify_log(
                         saga=saga,
@@ -497,16 +480,17 @@ class SagaEngine(Generic[ModelT, HistoryModelT]):
 
     def _is_waiting_for_events(self, saga) -> bool:
         """Проверяет, ожидает ли сага внешних событий."""
-        context = saga.context
-        return bool(context.awaiting_event_type or context.awaiting_event_types)
+        context: SagaContext = saga.context
+        return bool(context.awaiting_event_types or context.awaiting_correlation_id)
 
     def _handle_saga_timeout(self, saga, now: datetime) -> None:
-        """логика обработки таймаута ожидания событий."""
+        """Логика обработки таймаута ожидания событий."""
         context = saga.context
-        event_types = context.awaiting_event_types or context.awaiting_event_type
 
         saga.status = SagaStatus.TIMEOUT
-        saga.last_error = f"Timed out waiting for event(s): {event_types}"
+        saga.last_error = (
+            f"Timed out waiting for event(s): {context.awaiting_event_types}"
+        )
         saga.deadline_at = None
         saga.step_execution_token = uuid.uuid4()
 
@@ -528,6 +512,7 @@ class SagaEngine(Generic[ModelT, HistoryModelT]):
                 skipped=False,
             )
         )
+        context.clear_awaiting_state()
 
     async def get_snapshot(self, saga_id: UUID) -> SagaSnapshot:
         """Return the snapshot view of one saga."""
@@ -612,6 +597,7 @@ class SagaEngine(Generic[ModelT, HistoryModelT]):
                     step_def,
                     now=datetime.now(UTC),
                 )
+                saga.context.clear_awaiting_state()
 
         await self._drive(saga_id)
 
@@ -623,12 +609,13 @@ class SagaEngine(Generic[ModelT, HistoryModelT]):
                 if saga.status not in {
                     SagaStatus.SUSPENDED,
                     SagaStatus.FAILED,
+                    SagaStatus.TIMEOUT,
                     SagaStatus.COMPENSATING,
                     SagaStatus.COMPENSATING_SUSPENDED,
                 }:
                     raise SagaStateError(
                         "Cannot start compensation unless saga is suspended, failed, "
-                        f"or already compensating (status={saga.status})"
+                        f"timed out, or already compensating (status={saga.status})"
                     )
                 if saga.current_step_index <= 0:
                     raise SagaStateError(
@@ -639,6 +626,7 @@ class SagaEngine(Generic[ModelT, HistoryModelT]):
                 saga.retry_counter = 0
                 saga.step_execution_token = uuid.uuid4()
                 saga.deadline_at = datetime.now(UTC) + self._execution_lease
+                saga.context.clear_awaiting_state()
 
         await self._run_compensation(saga_id)
 
@@ -679,6 +667,7 @@ class SagaEngine(Generic[ModelT, HistoryModelT]):
                 saga.deadline_at = None
                 saga.last_error = error_message
                 saga.step_execution_token = uuid.uuid4()
+                saga.context.clear_awaiting_state()
 
     async def skip_step(
         self,
@@ -731,7 +720,7 @@ class SagaEngine(Generic[ModelT, HistoryModelT]):
                 saga.context.save_step_output(
                     step_def.step_id, output_model.model_dump(mode="json")
                 )
-
+                saga.context.clear_awaiting_state()
                 saga.current_step_index += 1
                 saga.retry_counter = 0
                 saga.last_error = None

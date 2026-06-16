@@ -5,7 +5,13 @@ from datetime import timedelta
 
 import pytest
 
-from saga_orchestrator import SagaAdmin, SagaBuilder, SagaStepPhase, SagaStepStatus
+from saga_orchestrator import (
+    SagaAdmin,
+    SagaAdminSnapshot,
+    SagaBuilder,
+    SagaStepPhase,
+    SagaStepStatus,
+)
 from saga_orchestrator.core.orchestrator import SagaOrchestrator
 from saga_orchestrator.domain.exceptions import ActiveSagaAlreadyExistsError
 from saga_orchestrator.domain.models import ExponentialRetry
@@ -17,6 +23,7 @@ from tests.integration.helpers import (
     ActivateQueueStep,
     AddOneStep,
     AlwaysFailStep,
+    CompensatingStep,
     FailsOnceStep,
     FlakyStep,
     HttpInput,
@@ -25,6 +32,8 @@ from tests.integration.helpers import (
     RecoverableStep,
     ReserveQueueInput,
     ReserveQueueStep,
+    RetryWaitInput,
+    RetryWaitStep,
     StartInput,
     WaitingWithTimeoutStep,
 )
@@ -308,10 +317,12 @@ async def test_three_step_http_and_queue_style_flow(session_maker):
         aggregation_id="agg-http-queue-3",
     )
 
-    state_after_start = await admin.get_saga(saga_id)
+    state_after_start: SagaAdminSnapshot = await admin.get_saga(saga_id)
     assert state_after_start.status == SagaStatus.SUSPENDED
     assert state_after_start.current_step_index == 1
-    assert state_after_start.context.awaiting_event_type == "reserve.success"
+    assert len(state_after_start.context.awaiting_event_types) == 2
+    assert "reserve.success" in state_after_start.context.awaiting_event_types
+    assert "reserve.failed" in state_after_start.context.awaiting_event_types
 
     processed = await dispatcher.run_once(limit=10)
     assert processed == 1
@@ -323,11 +334,11 @@ async def test_three_step_http_and_queue_style_flow(session_maker):
     reserve_token = (await admin.get_saga(saga_id)).step_execution_token
     await orchestrator.notify(
         saga_id=saga_id,
-        token=reserve_token,  # type: ignore[arg-type]
+        token=reserve_token,
         event=NotifyEvent(
             event_id="evt-reserve-1",
             event_type="reserve.success",
-            correlation_id=first_headers["correlation_id"],  # type: ignore[index]
+            correlation_id=first_headers["correlation_id"],
             payload={"reservation_id": "res-200"},
         ),
     )
@@ -335,7 +346,9 @@ async def test_three_step_http_and_queue_style_flow(session_maker):
     state_after_reserve = await admin.get_saga(saga_id)
     assert state_after_reserve.status == SagaStatus.SUSPENDED
     assert state_after_reserve.current_step_index == 2
-    assert state_after_reserve.context.awaiting_event_type == "activate.success"
+    assert len(state_after_start.context.awaiting_event_types) == 2
+    assert "activate.success" in state_after_reserve.context.awaiting_event_types
+    assert "activate.failed" in state_after_reserve.context.awaiting_event_types
 
     processed = await dispatcher.run_once(limit=10)
     assert processed == 1
@@ -347,11 +360,11 @@ async def test_three_step_http_and_queue_style_flow(session_maker):
     activate_token = (await admin.get_saga(saga_id)).step_execution_token
     await orchestrator.notify(
         saga_id=saga_id,
-        token=activate_token,  # type: ignore[arg-type]
+        token=activate_token,
         event=NotifyEvent(
             event_id="evt-activate-1",
             event_type="activate.success",
-            correlation_id=second_headers["correlation_id"],  # type: ignore[index]
+            correlation_id=second_headers["correlation_id"],
             payload={"deployment_id": "dep-200"},
         ),
     )
@@ -446,3 +459,109 @@ async def test_timed_out_status_on_await_event_deadline(session_maker):
     assert state_after.step_history[1].status == SagaStepStatus.TIMEOUT
     assert state_after.step_history[1].phase == SagaStepPhase.EXECUTE
     assert "Timed out" in state_after.step_history[1].error
+
+    assert state_after.context.awaiting_event_types == ()
+    assert state_after.context.awaiting_correlation_id is None
+    assert state_after.context.awaiting_until is None
+
+
+@pytest.mark.asyncio
+async def test_compensate_after_timeout_resolves_deadlock(session_maker):
+    """
+    Проверяет возможность запуска компенсации для саги, зависшей со статусом TIMEOUT.
+    Убеждается, что админ может спасти сагу без правки БД.
+    """
+    first_step = CompensatingStep()
+    builder = SagaBuilder()
+    ref = builder.add_step(
+        step=first_step,
+        input_map=lambda ctx: StartInput(value=ctx.initial_data["value"]),
+    )
+    builder.add_step(
+        step=WaitingWithTimeoutStep(),
+        depends_on=ref,
+        input_map=lambda out: StartInput(value=out.value),
+    )
+
+    orchestrator = SagaOrchestrator[IntegrationSagaState, IntegrationSagaHistory](
+        model_class=IntegrationSagaState,
+        history_model_class=IntegrationSagaHistory,
+        session_maker=session_maker,
+    )
+    admin = SagaAdmin[IntegrationSagaState, IntegrationSagaHistory](
+        engine=orchestrator.engine
+    )
+    orchestrator.register("comp-timeout", builder.build())
+
+    saga_id = await orchestrator.start(
+        saga_name="comp-timeout",
+        initial_data={"value": 1},
+        aggregation_id="agg-comp-timeout",
+    )
+
+    await asyncio.sleep(0.1)
+    await orchestrator.run_due()
+
+    state = await admin.get_saga(saga_id)
+    assert state.status == SagaStatus.TIMEOUT
+
+    await admin.compensate_step(saga_id)
+
+    final_state = await admin.get_saga(saga_id)
+    assert final_state.status == SagaStatus.COMPENSATED
+    assert first_step.compensated is True
+
+
+@pytest.mark.asyncio
+async def test_retry_after_timeout_processes_successfully(session_maker):
+    """
+    Проверяет успешный ретрай саги после таймаута. Убеждается, что нет мгновенного
+    повторного таймаута из-за старого неочищенного кеша ожидания.
+    """
+
+    builder = SagaBuilder()
+    builder.add_step(
+        step=RetryWaitStep(),
+        input_map=lambda ctx: RetryWaitInput(
+            value=ctx.initial_data["value"],
+            event_type=ctx.latest_event_type,
+        ),
+    )
+
+    orchestrator = SagaOrchestrator[IntegrationSagaState, IntegrationSagaHistory](
+        model_class=IntegrationSagaState,
+        history_model_class=IntegrationSagaHistory,
+        session_maker=session_maker,
+    )
+    admin = SagaAdmin[IntegrationSagaState, IntegrationSagaHistory](
+        engine=orchestrator.engine
+    )
+    orchestrator.register("retry-timeout", builder.build())
+
+    saga_id = await orchestrator.start(
+        saga_name="retry-timeout",
+        initial_data={"value": 1},
+        aggregation_id="agg-retry-timeout",
+    )
+
+    await asyncio.sleep(0.1)
+    await orchestrator.run_due()
+    state1 = await admin.get_saga(saga_id)
+    assert state1.status == SagaStatus.TIMEOUT
+
+    await admin.retry_step(saga_id)
+    state2 = await admin.get_saga(saga_id)
+
+    assert state2.status == SagaStatus.SUSPENDED
+    assert state2.context.awaiting_event_types == ("some.event",)
+
+    await orchestrator.notify(
+        saga_id=saga_id,
+        token=state2.step_execution_token,
+        event=NotifyEvent(
+            event_id="evt-retry-123", event_type="some.event", payload={"value": 42}
+        ),
+    )
+
+    final_state = await admin.get_saga(saga_id)
+    assert final_state.status == SagaStatus.COMPLETED
