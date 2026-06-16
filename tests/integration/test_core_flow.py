@@ -4,10 +4,14 @@ import asyncio
 from datetime import timedelta
 
 import pytest
-from pydantic import BaseModel
 
-from saga_orchestrator import SagaAdmin, SagaBuilder, SagaStepPhase, SagaStepStatus, SagaStateMixin, SagaAdminSnapshot, \
-    BaseStep, StepAwaitEvent
+from saga_orchestrator import (
+    SagaAdmin,
+    SagaAdminSnapshot,
+    SagaBuilder,
+    SagaStepPhase,
+    SagaStepStatus,
+)
 from saga_orchestrator.core.orchestrator import SagaOrchestrator
 from saga_orchestrator.domain.exceptions import ActiveSagaAlreadyExistsError
 from saga_orchestrator.domain.models import ExponentialRetry
@@ -19,6 +23,7 @@ from tests.integration.helpers import (
     ActivateQueueStep,
     AddOneStep,
     AlwaysFailStep,
+    CompensatingStep,
     FailsOnceStep,
     FlakyStep,
     HttpInput,
@@ -27,8 +32,10 @@ from tests.integration.helpers import (
     RecoverableStep,
     ReserveQueueInput,
     ReserveQueueStep,
+    RetryWaitInput,
+    RetryWaitStep,
     StartInput,
-    WaitingWithTimeoutStep, CompensatingStep, StartOutput, RetryWaitStep, RetryWaitInput,
+    WaitingWithTimeoutStep,
 )
 from tests.integration.models import (
     IntegrationOutboxMessage,
@@ -315,7 +322,7 @@ async def test_three_step_http_and_queue_style_flow(session_maker):
     assert state_after_start.current_step_index == 1
     assert len(state_after_start.context.awaiting_event_types) == 2
     assert "reserve.success" in state_after_start.context.awaiting_event_types
-    assert 'reserve.failed' in state_after_start.context.awaiting_event_types
+    assert "reserve.failed" in state_after_start.context.awaiting_event_types
 
     processed = await dispatcher.run_once(limit=10)
     assert processed == 1
@@ -341,7 +348,7 @@ async def test_three_step_http_and_queue_style_flow(session_maker):
     assert state_after_reserve.current_step_index == 2
     assert len(state_after_start.context.awaiting_event_types) == 2
     assert "activate.success" in state_after_reserve.context.awaiting_event_types
-    assert 'activate.failed' in state_after_reserve.context.awaiting_event_types
+    assert "activate.failed" in state_after_reserve.context.awaiting_event_types
 
     processed = await dispatcher.run_once(limit=10)
     assert processed == 1
@@ -512,7 +519,6 @@ async def test_retry_after_timeout_processes_successfully(session_maker):
     повторного таймаута из-за старого неочищенного кеша ожидания.
     """
 
-
     builder = SagaBuilder()
     builder.add_step(
         step=RetryWaitStep(),
@@ -553,10 +559,8 @@ async def test_retry_after_timeout_processes_successfully(session_maker):
         saga_id=saga_id,
         token=state2.step_execution_token,
         event=NotifyEvent(
-            event_id="evt-retry-123",
-            event_type="some.event",
-            payload={"value": 42}
-        )
+            event_id="evt-retry-123", event_type="some.event", payload={"value": 42}
+        ),
     )
 
     final_state = await admin.get_saga(saga_id)

@@ -333,9 +333,11 @@ class WaitingWithTimeoutStep(BaseStep[StartInput, StartOutput]):
             until=timedelta(milliseconds=10),
         )
 
+
 class RetryWaitInput(BaseModel):
     value: int
     event_type: str | None = None
+
 
 class RetryWaitStep(BaseStep[RetryWaitInput, StartOutput]):
     async def execute(self, inp: RetryWaitInput) -> StepAwaitEvent | StartOutput:

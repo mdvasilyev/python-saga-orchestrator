@@ -75,7 +75,9 @@ async def test_top_level_attribute_change_is_persisted(session_maker):
         await session.commit()
 
     async with session_maker() as session:
-        reloaded_saga: SagaStateMixin | None = await session.get(IntegrationSagaState, saga_id)
+        reloaded_saga: SagaStateMixin | None = await session.get(
+            IntegrationSagaState, saga_id
+        )
         assert reloaded_saga is not None
         assert len(reloaded_saga.context.awaiting_event_types) == 1
         assert new_awaiting_type in reloaded_saga.context.awaiting_event_types

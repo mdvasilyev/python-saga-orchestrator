@@ -218,11 +218,11 @@ class SagaEngine(Generic[ModelT, HistoryModelT]):
         return result == NotifyResult.ACCEPTED
 
     async def notify_detailed(
-            self,
-            *,
-            saga_id: UUID,
-            token: UUID,
-            event: NotifyEvent | dict[str, Any] | Any | None = None,
+        self,
+        *,
+        saga_id: UUID,
+        token: UUID,
+        event: NotifyEvent | dict[str, Any] | Any | None = None,
     ) -> NotifyResult:
         """Resume a suspended saga and return a detailed notify outcome."""
         normalized_event, idempotency_key = self._normalize_notify_event(event)
@@ -271,9 +271,9 @@ class SagaEngine(Generic[ModelT, HistoryModelT]):
                     return NotifyResult.EVENT_TYPE_MISMATCH
 
                 if (
-                        normalized_event is not None
-                        and expected_types
-                        and normalized_event.event_type not in expected_types
+                    normalized_event is not None
+                    and expected_types
+                    and normalized_event.event_type not in expected_types
                 ):
                     self._append_notify_log(
                         saga=saga,
@@ -488,7 +488,9 @@ class SagaEngine(Generic[ModelT, HistoryModelT]):
         context = saga.context
 
         saga.status = SagaStatus.TIMEOUT
-        saga.last_error = f"Timed out waiting for event(s): {context.awaiting_event_types}"
+        saga.last_error = (
+            f"Timed out waiting for event(s): {context.awaiting_event_types}"
+        )
         saga.deadline_at = None
         saga.step_execution_token = uuid.uuid4()
 
