@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from datetime import timedelta
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -45,8 +46,6 @@ class ReserveQueueInput(BaseModel):
     order_id: str
     gateway_url: str
     correlation_id: str
-    event_type: str | None = None
-    event_payload: dict | None = None
 
 
 class ReserveQueueOutput(BaseModel):
@@ -56,8 +55,6 @@ class ReserveQueueOutput(BaseModel):
 class ActivateQueueInput(BaseModel):
     reservation_id: str
     correlation_id: str
-    event_type: str | None = None
-    event_payload: dict | None = None
 
 
 class ActivateQueueOutput(BaseModel):
@@ -66,16 +63,19 @@ class ActivateQueueOutput(BaseModel):
 
 class InboxWaitInput(BaseModel):
     value: int
-    event_type: str | None = None
 
 
 class InboxWaitOutput(BaseModel):
     value: int
 
 
-# STEPS
 class AddOneStep(BaseStep[StartInput, StartOutput]):
-    async def execute(self, inp: StartInput) -> StartOutput:
+    async def execute(
+        self,
+        inp: StartInput,
+        event_type: str | None = None,
+        event_payload: Any | None = None,
+    ) -> StartOutput:
         return StartOutput(value=inp.value + 1)
 
 
@@ -84,13 +84,24 @@ class FlakyStep(BaseStep[NextInput, NextOutput]):
         self.calls = 0
         self.compensated = False
 
-    async def execute(self, inp: NextInput) -> NextOutput:
+    async def execute(
+        self,
+        inp: NextInput,
+        event_type: str | None = None,
+        event_payload: Any | None = None,
+    ) -> NextOutput:
         self.calls += 1
         if self.calls == 1:
             raise RuntimeError("temporary")
         return NextOutput(value=inp.value + 10)
 
-    async def compensate(self, inp: NextInput, out: NextOutput) -> None:
+    async def compensate(
+        self,
+        inp: NextInput,
+        out: NextOutput,
+        event_type: str | None = None,
+        event_payload: Any | None = None,
+    ) -> None:
         self.compensated = True
 
 
@@ -98,7 +109,12 @@ class FailsOnceStep(BaseStep[StartInput, StartOutput]):
     def __init__(self) -> None:
         self.calls = 0
 
-    async def execute(self, inp: StartInput) -> StartOutput:
+    async def execute(
+        self,
+        inp: StartInput,
+        event_type: str | None = None,
+        event_payload: Any | None = None,
+    ) -> StartOutput:
         self.calls += 1
         if self.calls == 1:
             raise RuntimeError("temporary")
@@ -106,12 +122,22 @@ class FailsOnceStep(BaseStep[StartInput, StartOutput]):
 
 
 class AlwaysFailStep(BaseStep[StartInput, StartOutput]):
-    async def execute(self, inp: StartInput) -> StartOutput:
+    async def execute(
+        self,
+        inp: StartInput,
+        event_type: str | None = None,
+        event_payload: Any | None = None,
+    ) -> StartOutput:
         raise RuntimeError("always fail")
 
 
 class HttpStep(BaseStep[HttpInput, HttpOutput]):
-    async def execute(self, inp: HttpInput) -> HttpOutput:
+    async def execute(
+        self,
+        inp: HttpInput,
+        event_type: str | None = None,
+        event_payload: Any | None = None,
+    ) -> HttpOutput:
         return HttpOutput(
             order_id=inp.order_id,
             gateway_url=f"https://gw/{inp.order_id}",
@@ -122,8 +148,10 @@ class ReserveQueueStep(BaseStep[ReserveQueueInput, ReserveQueueOutput]):
     async def execute(
         self,
         inp: ReserveQueueInput,
+        event_type: str | None = None,
+        event_payload: Any | None = None,
     ) -> ReserveQueueOutput | StepAwaitEvent:
-        if inp.event_type is None:
+        if event_type is None:
             return StepAwaitEvent(
                 event_types=("reserve.success", "reserve.failed"),
                 correlation_id=inp.correlation_id,
@@ -139,11 +167,12 @@ class ReserveQueueStep(BaseStep[ReserveQueueInput, ReserveQueueOutput]):
                     ),
                 ),
             )
-        if inp.event_type == "reserve.failed":
+        if event_type == "reserve.failed":
             raise RuntimeError("reserve failed")
-        if inp.event_type != "reserve.success":
+        if event_type != "reserve.success":
             raise RuntimeError("unexpected reserve event")
-        payload = inp.event_payload or {}
+
+        payload = event_payload or {}
         return ReserveQueueOutput(reservation_id=payload["reservation_id"])
 
 
@@ -151,8 +180,10 @@ class ActivateQueueStep(BaseStep[ActivateQueueInput, ActivateQueueOutput]):
     async def execute(
         self,
         inp: ActivateQueueInput,
+        event_type: str | None = None,
+        event_payload: Any | None = None,
     ) -> ActivateQueueOutput | StepAwaitEvent:
-        if inp.event_type is None:
+        if event_type is None:
             return StepAwaitEvent(
                 event_types=("activate.success", "activate.failed"),
                 correlation_id=inp.correlation_id,
@@ -165,30 +196,39 @@ class ActivateQueueStep(BaseStep[ActivateQueueInput, ActivateQueueOutput]):
                     ),
                 ),
             )
-        if inp.event_type == "activate.failed":
+        if event_type == "activate.failed":
             raise RuntimeError("activate failed")
-        if inp.event_type != "activate.success":
+        if event_type != "activate.success":
             raise RuntimeError("unexpected activate event")
-        payload = inp.event_payload or {}
+
+        payload = event_payload or {}
         return ActivateQueueOutput(deployment_id=payload["deployment_id"])
 
 
 class InboxWaitStep(BaseStep[InboxWaitInput, InboxWaitOutput]):
-    async def execute(self, inp: InboxWaitInput) -> InboxWaitOutput | StepAwaitEvent:
-        if inp.event_type is None:
+    async def execute(
+        self,
+        inp: InboxWaitInput,
+        event_type: str | None = None,
+        event_payload: Any | None = None,
+    ) -> InboxWaitOutput | StepAwaitEvent:
+        if event_type is None:
             return StepAwaitEvent(
                 event_types=("inbox.success", "inbox.failed"),
                 correlation_id=f"inbox-{inp.value}",
             )
-        if inp.event_type == "inbox.failed":
+        if event_type == "inbox.failed":
             raise RuntimeError("inbox failed")
         return InboxWaitOutput(value=inp.value + 1)
 
 
 class FailingStep(BaseStep[NextInput, NextOutput]):
-    """Простой шаг, который всегда падает, чтобы запустить компенсацию."""
-
-    async def execute(self, inp: NextInput) -> NextOutput:
+    async def execute(
+        self,
+        inp: NextInput,
+        event_type: str | None = None,
+        event_payload: Any | None = None,
+    ) -> NextOutput:
         raise RuntimeError("boom")
 
 
@@ -199,11 +239,20 @@ class CompensateWaitsStep(BaseStep[StartInput, StartOutput]):
         self.compensation_calls = 0
         self.compensation_completed = False
 
-    async def execute(self, inp: StartInput) -> StartOutput:
+    async def execute(
+        self,
+        inp: StartInput,
+        event_type: str | None = None,
+        event_payload: Any | None = None,
+    ) -> StartOutput:
         return StartOutput(value=inp.value + 1)
 
     async def compensate(
-        self, inp: StartInput, out: StartOutput
+        self,
+        inp: StartInput,
+        out: StartOutput,
+        event_type: str | None = None,
+        event_payload: Any | None = None,
     ) -> StepAwaitEvent | None:
         self.compensation_calls += 1
         if self.compensation_calls == 1:
@@ -222,11 +271,20 @@ class CompensateWaitsWithTimeoutStep(BaseStep[StartInput, StartOutput]):
         self.compensation_calls = 0
         self.compensation_completed = False
 
-    async def execute(self, inp: StartInput) -> StartOutput:
+    async def execute(
+        self,
+        inp: StartInput,
+        event_type: str | None = None,
+        event_payload: Any | None = None,
+    ) -> StartOutput:
         return StartOutput(value=inp.value + 1)
 
     async def compensate(
-        self, inp: StartInput, out: StartOutput
+        self,
+        inp: StartInput,
+        out: StartOutput,
+        event_type: str | None = None,
+        event_payload: Any | None = None,
     ) -> StepAwaitEvent | None:
         self.compensation_calls += 1
         if self.compensation_calls == 1:
@@ -246,10 +304,21 @@ class FlakyCompensateStep(BaseStep[StartInput, StartOutput]):
         self.compensation_calls = 0
         self.compensation_completed = False
 
-    async def execute(self, inp: StartInput) -> StartOutput:
+    async def execute(
+        self,
+        inp: StartInput,
+        event_type: str | None = None,
+        event_payload: Any | None = None,
+    ) -> StartOutput:
         return StartOutput(value=inp.value + 1)
 
-    async def compensate(self, inp: StartInput, out: StartOutput) -> None:
+    async def compensate(
+        self,
+        inp: StartInput,
+        out: StartOutput,
+        event_type: str | None = None,
+        event_payload: Any | None = None,
+    ) -> None:
         self.compensation_calls += 1
         if self.compensation_calls == 1:
             raise RuntimeError("compensation failed once")
@@ -262,20 +331,40 @@ class CompensatingStep(BaseStep[StartInput, StartOutput]):
     def __init__(self) -> None:
         self.compensated = False
 
-    async def execute(self, inp: StartInput) -> StartOutput:
+    async def execute(
+        self,
+        inp: StartInput,
+        event_type: str | None = None,
+        event_payload: Any | None = None,
+    ) -> StartOutput:
         return StartOutput(value=inp.value + 1)
 
-    async def compensate(self, inp: StartInput, out: StartOutput) -> None:
+    async def compensate(
+        self,
+        inp: StartInput,
+        out: StartOutput,
+        event_type: str | None = None,
+        event_payload: Any | None = None,
+    ) -> None:
         self.compensated = True
 
 
 class IrreversibleStep(BaseStep[StartInput, StartOutput]):
-    """Шаг, чья компенсация всегда падает."""
-
-    async def execute(self, inp: StartInput) -> StartOutput:
+    async def execute(
+        self,
+        inp: StartInput,
+        event_type: str | None = None,
+        event_payload: Any | None = None,
+    ) -> StartOutput:
         return StartOutput(value=inp.value + 1)
 
-    async def compensate(self, inp: StartInput, out: StartOutput) -> None:
+    async def compensate(
+        self,
+        inp: StartInput,
+        out: StartOutput,
+        event_type: str | None = None,
+        event_payload: Any | None = None,
+    ) -> None:
         raise RuntimeError("Cannot be compensated")
 
 
@@ -284,7 +373,12 @@ class RecoverableStep(BaseStep[StartInput, StartOutput]):
         self.calls = 0
         self.started = asyncio.Event()
 
-    async def execute(self, inp: StartInput) -> StartOutput:
+    async def execute(
+        self,
+        inp: StartInput,
+        event_type: str | None = None,
+        event_payload: Any | None = None,
+    ) -> StartOutput:
         self.calls += 1
         self.started.set()
         if self.calls == 1:
@@ -298,10 +392,21 @@ class ReservingStep(BaseStep[StartInput, StartOutput]):
         self.compensation_started = asyncio.Event()
         self.compensated = False
 
-    async def execute(self, inp: StartInput) -> StartOutput:
+    async def execute(
+        self,
+        inp: StartInput,
+        event_type: str | None = None,
+        event_payload: Any | None = None,
+    ) -> StartOutput:
         return StartOutput(value=inp.value + 1)
 
-    async def compensate(self, inp: StartInput, out: StartOutput) -> None:
+    async def compensate(
+        self,
+        inp: StartInput,
+        out: StartOutput,
+        event_type: str | None = None,
+        event_payload: Any | None = None,
+    ) -> None:
         self.compensation_calls += 1
         self.compensation_started.set()
         if self.compensation_calls == 1 and not self.compensated:
@@ -314,20 +419,33 @@ class LongRunningStep(BaseStep[StartInput, StartOutput]):
     def __init__(self) -> None:
         self.started = asyncio.Event()
 
-    async def execute(self, inp: StartInput) -> StartOutput:
+    async def execute(
+        self,
+        inp: StartInput,
+        event_type: str | None = None,
+        event_payload: Any | None = None,
+    ) -> StartOutput:
         self.started.set()
         await asyncio.Future()
 
 
 class WaitingStep(BaseStep[NextInput, NextOutput]):
-    async def execute(self, inp: NextInput) -> NextOutput:
+    async def execute(
+        self,
+        inp: NextInput,
+        event_type: str | None = None,
+        event_payload: Any | None = None,
+    ) -> NextOutput:
         raise RuntimeError("pending approval")
 
 
 class WaitingWithTimeoutStep(BaseStep[StartInput, StartOutput]):
-    """Шаг, который всегда ждет события с небольшим таймаутом."""
-
-    async def execute(self, inp: StartInput) -> StepAwaitEvent | StartOutput:
+    async def execute(
+        self,
+        inp: StartInput,
+        event_type: str | None = None,
+        event_payload: Any | None = None,
+    ) -> StepAwaitEvent | StartOutput:
         return StepAwaitEvent(
             event_types=("some.event",),
             until=timedelta(milliseconds=10),
@@ -336,12 +454,16 @@ class WaitingWithTimeoutStep(BaseStep[StartInput, StartOutput]):
 
 class RetryWaitInput(BaseModel):
     value: int
-    event_type: str | None = None
 
 
 class RetryWaitStep(BaseStep[RetryWaitInput, StartOutput]):
-    async def execute(self, inp: RetryWaitInput) -> StepAwaitEvent | StartOutput:
-        if inp.event_type is None:
+    async def execute(
+        self,
+        inp: RetryWaitInput,
+        event_type: str | None = None,
+        event_payload: Any | None = None,
+    ) -> StepAwaitEvent | StartOutput:
+        if event_type is None:
             return StepAwaitEvent(
                 event_types=("some.event",),
                 until=timedelta(milliseconds=10),

@@ -5,6 +5,7 @@ import contextlib
 import json
 import os
 from datetime import timedelta
+from typing import Any
 from uuid import uuid4
 
 from aio_pika import DeliveryMode, IncomingMessage, Message, connect_robust
@@ -70,8 +71,6 @@ class ReserveInput(BaseModel):
     order_id: str
     gateway_url: str
     correlation_id: str
-    response_event_type: str | None = None
-    response_payload: dict | None = None
 
 
 class ReserveOutput(BaseModel):
@@ -82,8 +81,6 @@ class ActivateInput(BaseModel):
     aggregation_id: str
     reservation_id: str
     correlation_id: str
-    response_event_type: str | None = None
-    response_payload: dict | None = None
 
 
 class ActivateOutput(BaseModel):
@@ -91,7 +88,12 @@ class ActivateOutput(BaseModel):
 
 
 class PrepareStep(BaseStep[PrepareInput, PrepareOutput]):
-    async def execute(self, inp: PrepareInput) -> PrepareOutput:
+    async def execute(
+        self,
+        inp: PrepareInput,
+        event_type: str | None = None,
+        event_payload: Any | None = None,
+    ) -> PrepareOutput:
         print(f"[http] request: prepare order={inp.order_id}")
         await asyncio.sleep(0.05)
         return PrepareOutput(
@@ -101,8 +103,13 @@ class PrepareStep(BaseStep[PrepareInput, PrepareOutput]):
 
 
 class ReserveQueueStep(BaseStep[ReserveInput, ReserveOutput]):
-    async def execute(self, inp: ReserveInput) -> ReserveOutput | StepAwaitEvent:
-        if inp.response_event_type is None:
+    async def execute(
+        self,
+        inp: ReserveInput,
+        event_type: str | None = None,
+        event_payload: Any | None = None,
+    ) -> ReserveOutput | StepAwaitEvent:
+        if event_type is None:
             print(f"[queue] send reserve command for order={inp.order_id}")
             return StepAwaitEvent(
                 event_types=("reserve.success", "reserve.failed"),
@@ -121,18 +128,24 @@ class ReserveQueueStep(BaseStep[ReserveInput, ReserveOutput]):
                     ),
                 ),
             )
-        if inp.response_event_type == "reserve.failed":
-            reason = (inp.response_payload or {}).get("reason", "unknown")
+        if event_type == "reserve.failed":
+            reason = (event_payload or {}).get("reason", "unknown")
             raise RuntimeError(f"reserve failed: {reason}")
-        if inp.response_event_type != "reserve.success":
-            raise RuntimeError(f"unexpected reserve event: {inp.response_event_type}")
-        payload = inp.response_payload or {}
+        if event_type != "reserve.success":
+            raise RuntimeError(f"unexpected reserve event: {event_type}")
+
+        payload = event_payload or {}
         return ReserveOutput(reservation_id=payload["reservation_id"])
 
 
 class ActivateQueueStep(BaseStep[ActivateInput, ActivateOutput]):
-    async def execute(self, inp: ActivateInput) -> ActivateOutput | StepAwaitEvent:
-        if inp.response_event_type is None:
+    async def execute(
+        self,
+        inp: ActivateInput,
+        event_type: str | None = None,
+        event_payload: Any | None = None,
+    ) -> ActivateOutput | StepAwaitEvent:
+        if event_type is None:
             print(f"[queue] send activate command for reservation={inp.reservation_id}")
             return StepAwaitEvent(
                 event_types=("activate.success", "activate.failed"),
@@ -150,15 +163,17 @@ class ActivateQueueStep(BaseStep[ActivateInput, ActivateOutput]):
                     ),
                 ),
             )
-        if inp.response_event_type == "activate.failed":
-            reason = (inp.response_payload or {}).get("reason", "unknown")
+        if event_type == "activate.failed":
+            reason = (event_payload or {}).get("reason", "unknown")
             raise RuntimeError(f"activate failed: {reason}")
-        if inp.response_event_type != "activate.success":
-            raise RuntimeError(f"unexpected activate event: {inp.response_event_type}")
-        payload = inp.response_payload or {}
+        if event_type != "activate.success":
+            raise RuntimeError(f"unexpected activate event: {event_type}")
+
+        payload = event_payload or {}
         return ActivateOutput(deployment_id=payload["deployment_id"])
 
 
+# ... (RabbitMqPublisher остается без изменений) ...
 class RabbitMqPublisher:
     def __init__(self, channel) -> None:
         self._channel = channel
@@ -214,10 +229,6 @@ async def main() -> None:
             order_id=ctx.initial_data["order_id"],
             gateway_url=ctx.step_outputs["step_0"]["gateway_url"],
             correlation_id=f"reserve-{ctx.initial_data['order_id']}",
-            response_event_type=(ctx.context.get("latest_event_meta") or {}).get(
-                "event_type"
-            ),
-            response_payload=ctx.latest_event,
         ),
     )
     builder.add_step(
@@ -226,10 +237,6 @@ async def main() -> None:
             aggregation_id=ctx.initial_data["order_id"],
             reservation_id=ctx.step_outputs["step_1"]["reservation_id"],
             correlation_id=f"activate-{ctx.step_outputs['step_1']['reservation_id']}",
-            response_event_type=(ctx.context.get("latest_event_meta") or {}).get(
-                "event_type"
-            ),
-            response_payload=ctx.latest_event,
         ),
     )
     orchestrator.register("http_queue_3_steps", builder.build())

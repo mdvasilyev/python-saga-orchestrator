@@ -261,8 +261,6 @@ async def test_three_step_http_and_queue_style_flow(session_maker):
             order_id=ctx.initial_data["order_id"],
             gateway_url=ctx.step_outputs["step_0"]["gateway_url"],
             correlation_id=f"reserve-{ctx.initial_data['order_id']}",
-            event_type=ctx.context.latest_event_meta.get("event_type"),
-            event_payload=ctx.latest_event,
         ),
     )
     builder.add_step(
@@ -270,8 +268,6 @@ async def test_three_step_http_and_queue_style_flow(session_maker):
         input_map=lambda ctx: ActivateQueueInput(
             reservation_id=ctx.step_outputs["step_1"]["reservation_id"],
             correlation_id=f"activate-{ctx.step_outputs['step_1']['reservation_id']}",
-            event_type=ctx.context.latest_event_meta.get("event_type"),
-            event_payload=ctx.latest_event,
         ),
     )
 
@@ -524,7 +520,6 @@ async def test_retry_after_timeout_processes_successfully(session_maker):
         step=RetryWaitStep(),
         input_map=lambda ctx: RetryWaitInput(
             value=ctx.initial_data["value"],
-            event_type=ctx.latest_event_type,
         ),
     )
 

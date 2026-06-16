@@ -795,6 +795,8 @@ class SagaEngine(Generic[ModelT, HistoryModelT]):
             step_token = prep["step_token"]
             step_input = prep["step_input"]
             attempt_number = prep["attempt_number"]
+            event_type = prep["event_type"]
+            event_payload = prep["event_payload"]
 
             success = False
             step_output: BaseModel | None = None
@@ -803,10 +805,16 @@ class SagaEngine(Generic[ModelT, HistoryModelT]):
 
             try:
                 if step_def.timeout is None:
-                    step_result = await step_def.step.execute(step_input)
+                    step_result = await step_def.step.execute(
+                        step_input, event_type=event_type, event_payload=event_payload
+                    )
                 else:
                     step_result = await asyncio.wait_for(
-                        step_def.step.execute(step_input),
+                        step_def.step.execute(
+                            step_input,
+                            event_type=event_type,
+                            event_payload=event_payload,
+                        ),
                         timeout=step_def.timeout.total_seconds(),
                     )
                 if isinstance(step_result, StepAwaitEvent):
@@ -861,12 +869,18 @@ class SagaEngine(Generic[ModelT, HistoryModelT]):
                 )
                 attempt_number = saga.retry_counter + 1
                 step_input = self._build_step_input(step_def, saga)
+                event_payload = saga.context.latest_event
+                event_type = None
+                if saga.context.latest_event_meta:
+                    event_type = saga.context.latest_event_meta.get("event_type")
 
                 return {
                     "step_def": step_def,
                     "step_token": step_token,
                     "step_input": step_input,
                     "attempt_number": attempt_number,
+                    "event_type": event_type,
+                    "event_payload": event_payload,
                 }
 
     async def _finalize_step(
@@ -1068,13 +1082,18 @@ class SagaEngine(Generic[ModelT, HistoryModelT]):
             original_input = comp_prep["original_input"]
             original_output = comp_prep["original_output"]
             attempt_number = comp_prep["attempt_number"]
+            event_type = comp_prep["event_type"]
+            event_payload = comp_prep["event_payload"]
 
             error: Exception | None = None
             wait_spec: StepAwaitEvent | None = None
 
             try:
                 comp_result = await step_def.step.compensate(
-                    original_input, original_output
+                    original_input,
+                    original_output,
+                    event_type=event_type,
+                    event_payload=event_payload,
                 )
                 if isinstance(comp_result, StepAwaitEvent):
                     wait_spec = comp_result
@@ -1130,6 +1149,12 @@ class SagaEngine(Generic[ModelT, HistoryModelT]):
                 saga.step_execution_token = token
                 saga.deadline_at = datetime.now(UTC) + self._execution_lease
                 attempt_number = saga.retry_counter + 1
+
+                event_payload = saga.context.latest_event
+                event_type = None
+                if saga.context.latest_event_meta:
+                    event_type = saga.context.latest_event_meta.get("event_type")
+
                 return {
                     "step_def": step_def,
                     "token": token,
@@ -1140,6 +1165,8 @@ class SagaEngine(Generic[ModelT, HistoryModelT]):
                     "original_output": step_def.output_model.model_validate(
                         execution_entry.output
                     ),
+                    "event_type": event_type,
+                    "event_payload": event_payload,
                 }
 
     async def _finalize_compensation(
@@ -1198,6 +1225,7 @@ class SagaEngine(Generic[ModelT, HistoryModelT]):
                     saga.status = SagaStatus.COMPENSATING_SUSPENDED
                     saga.last_error = None
                     saga.step_execution_token = uuid.uuid4()
+                    context.clear_latest_event()
                     return False
 
                 if error is not None:
@@ -1249,7 +1277,7 @@ class SagaEngine(Generic[ModelT, HistoryModelT]):
                 saga.retry_counter = 0
                 saga.last_error = None
                 saga.step_execution_token = uuid.uuid4()
-
+                context.clear_latest_event()
                 if saga.current_step_index <= 0:
                     saga.status = SagaStatus.COMPENSATED
                     saga.last_error = "Compensation completed successfully"

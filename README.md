@@ -20,6 +20,7 @@ Unlike external workflow platforms, this library runs inside your service and st
 - async queue-style steps through `StepAwaitEvent` and `notify(...)`
 - administrative operations through `SagaAdmin`
 - PostgreSQL-first reliability using `SELECT ... FOR UPDATE`
+- strict CQRS-style separation of historical step data (`InputModel`) and async triggers (`Events`)
 
 ## Installation
 
@@ -56,8 +57,10 @@ pip install '.[dev]'
 ### `BaseStep`
 
 Each saga step is a class with:
-- `execute(inp) -> out`
-- optional `compensate(inp, out) -> None`
+- `execute(self, inp, event_type=None, event_payload=None) -> out`
+- optional `compensate(self, inp, out, event_type=None, event_payload=None) -> None`
+
+The `inp` object represents the immutable historical command parameters (mapped via `input_map`), while `event_type` and `event_payload` receive dynamic asynchronous continuation signals.
 
 Steps are regular Python objects. In practice they are created once at application startup and reused.
 
@@ -105,6 +108,7 @@ Your SQLAlchemy model inherits `SagaStateMixin` to store:
 ```python
 import uuid
 from datetime import timedelta
+from typing import Any
 
 from pydantic import BaseModel
 from sqlalchemy import ForeignKey
@@ -162,15 +166,21 @@ class ChargeOutput(BaseModel):
 
 
 class ReserveInventoryStep(BaseStep[ReserveInput, ReserveOutput]):
-    async def execute(self, inp: ReserveInput) -> ReserveOutput:
+    async def execute(
+        self, inp: ReserveInput, event_type: str | None = None, event_payload: Any | None = None
+    ) -> ReserveOutput:
         return ReserveOutput(reservation_id=f"res-{inp.order_id}")
 
-    async def compensate(self, inp: ReserveInput, out: ReserveOutput) -> None:
+    async def compensate(
+        self, inp: ReserveInput, out: ReserveOutput, event_type: str | None = None, event_payload: Any | None = None
+    ) -> None:
         return None
 
 
 class ChargePaymentStep(BaseStep[ChargeInput, ChargeOutput]):
-    async def execute(self, inp: ChargeInput) -> ChargeOutput:
+    async def execute(
+        self, inp: ChargeInput, event_type: str | None = None, event_payload: Any | None = None
+    ) -> ChargeOutput:
         return ChargeOutput(payment_id=f"pay-{inp.reservation_id}")
 
 
@@ -265,7 +275,7 @@ token = await orchestrator.await_event(
 )
 ```
 
-The event payload is stored in saga context and can be used by root-step `input_map` functions through `InputContext`.
+When a suspended saga is awakened by an event, the orchestrator passes the event directly to the step's `execute` or `compensate` method via the `event_type` and `event_payload` arguments. This strictly separates historical context (`InputModel`) from dynamic asynchronous triggers (`Events`).
 
 For distributed consumers, use transactional inbox ingestion first, then process inbox rows:
 
