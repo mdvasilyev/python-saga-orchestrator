@@ -5,7 +5,7 @@ from datetime import timedelta
 
 import pytest
 
-from saga_orchestrator import SagaAdmin, SagaBuilder, SagaStepPhase, SagaStepStatus
+from saga_orchestrator import SagaAdmin, SagaBuilder, SagaStepPhase, SagaStepStatus, SagaStateMixin, SagaAdminSnapshot
 from saga_orchestrator.core.orchestrator import SagaOrchestrator
 from saga_orchestrator.domain.exceptions import ActiveSagaAlreadyExistsError
 from saga_orchestrator.domain.models import ExponentialRetry
@@ -308,10 +308,12 @@ async def test_three_step_http_and_queue_style_flow(session_maker):
         aggregation_id="agg-http-queue-3",
     )
 
-    state_after_start = await admin.get_saga(saga_id)
+    state_after_start: SagaAdminSnapshot = await admin.get_saga(saga_id)
     assert state_after_start.status == SagaStatus.SUSPENDED
     assert state_after_start.current_step_index == 1
-    assert state_after_start.context.awaiting_event_type == "reserve.success"
+    assert len(state_after_start.context.awaiting_event_types) == 2
+    assert "reserve.success" in state_after_start.context.awaiting_event_types
+    assert 'reserve.failed' in state_after_start.context.awaiting_event_types
 
     processed = await dispatcher.run_once(limit=10)
     assert processed == 1
@@ -323,11 +325,11 @@ async def test_three_step_http_and_queue_style_flow(session_maker):
     reserve_token = (await admin.get_saga(saga_id)).step_execution_token
     await orchestrator.notify(
         saga_id=saga_id,
-        token=reserve_token,  # type: ignore[arg-type]
+        token=reserve_token,
         event=NotifyEvent(
             event_id="evt-reserve-1",
             event_type="reserve.success",
-            correlation_id=first_headers["correlation_id"],  # type: ignore[index]
+            correlation_id=first_headers["correlation_id"],
             payload={"reservation_id": "res-200"},
         ),
     )
@@ -335,7 +337,9 @@ async def test_three_step_http_and_queue_style_flow(session_maker):
     state_after_reserve = await admin.get_saga(saga_id)
     assert state_after_reserve.status == SagaStatus.SUSPENDED
     assert state_after_reserve.current_step_index == 2
-    assert state_after_reserve.context.awaiting_event_type == "activate.success"
+    assert len(state_after_start.context.awaiting_event_types) == 2
+    assert "activate.success" in state_after_reserve.context.awaiting_event_types
+    assert 'activate.failed' in state_after_reserve.context.awaiting_event_types
 
     processed = await dispatcher.run_once(limit=10)
     assert processed == 1
@@ -347,11 +351,11 @@ async def test_three_step_http_and_queue_style_flow(session_maker):
     activate_token = (await admin.get_saga(saga_id)).step_execution_token
     await orchestrator.notify(
         saga_id=saga_id,
-        token=activate_token,  # type: ignore[arg-type]
+        token=activate_token,
         event=NotifyEvent(
             event_id="evt-activate-1",
             event_type="activate.success",
-            correlation_id=second_headers["correlation_id"],  # type: ignore[index]
+            correlation_id=second_headers["correlation_id"],
             payload={"deployment_id": "dep-200"},
         ),
     )

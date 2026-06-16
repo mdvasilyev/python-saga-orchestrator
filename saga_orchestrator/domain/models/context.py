@@ -78,7 +78,6 @@ class SagaContext(BaseModel):
     )  # For idempotency
 
     # -- Awaiting state --
-    awaiting_event_type: str | None = None
     awaiting_event_types: tuple[str, ...] = Field(default_factory=tuple)
     awaiting_correlation_id: str | None = None
     awaiting_until: str | None = None  # ISO 8601 format
@@ -111,12 +110,10 @@ class SagaContext(BaseModel):
         until: str | None,
     ) -> None:
         self.awaiting_event_types = event_types
-        self.awaiting_event_type = event_types[0] if event_types else None
         self.awaiting_correlation_id = correlation_id
         self.awaiting_until = until
 
     def clear_awaiting_state(self) -> None:
-        self.awaiting_event_type = None
         self.awaiting_event_types = ()
         self.awaiting_correlation_id = None
         self.awaiting_until = None
