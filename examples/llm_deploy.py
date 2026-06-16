@@ -4,6 +4,7 @@ import asyncio
 import os
 import uuid
 from datetime import timedelta
+from typing import Any
 
 from pydantic import BaseModel
 from sqlalchemy import ForeignKey
@@ -65,12 +66,22 @@ class DeployOutput(BaseModel):
 
 
 class CheckModelStep(BaseStep[CheckModelInput, CheckModelOutput]):
-    async def execute(self, inp: CheckModelInput) -> CheckModelOutput:
+    async def execute(
+        self,
+        inp: CheckModelInput,
+        event_type: str | None = None,
+        event_payload: Any | None = None,
+    ) -> CheckModelOutput:
         return CheckModelOutput(exists=inp.model_name in {"llama-2"})
 
 
 class DeployStep(BaseStep[DeployInput, DeployOutput]):
-    async def execute(self, inp: DeployInput) -> DeployOutput:
+    async def execute(
+        self,
+        inp: DeployInput,
+        event_type: str | None = None,
+        event_payload: Any | None = None,
+    ) -> DeployOutput:
         await asyncio.sleep(0.01)
         return DeployOutput(endpoint=f"https://models.local/{inp.model_name}")
 

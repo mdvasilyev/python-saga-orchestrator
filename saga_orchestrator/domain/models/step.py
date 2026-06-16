@@ -194,10 +194,19 @@ class BaseStep(Generic[InputModelT, OutputModelT]):
             f"Found await events: {len(await_candidates)}."
         )
 
-    async def execute(self, inp: InputModelT) -> OutputModelT | StepAwaitEvent:
+    async def execute(
+        self,
+        inp: InputModelT,
+        event_type: str | None = None,
+        event_payload: Any | None = None,
+    ) -> OutputModelT | StepAwaitEvent:
         raise NotImplementedError
 
     async def compensate(
-        self, inp: InputModelT, out: OutputModelT
+        self,
+        inp: InputModelT,
+        out: OutputModelT,
+        event_type: str | None = None,
+        event_payload: Any | None = None,
     ) -> StepAwaitEvent | None:
         raise NotImplementedError

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from datetime import timedelta
+from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel
@@ -73,14 +74,25 @@ class FinalizeOutput(BaseModel):
 
 
 class ReserveResourcesStep(BaseStep[StartInput, StartOutput]):
-    async def execute(self, inp: StartInput) -> StartOutput:
+    async def execute(
+        self,
+        inp: StartInput,
+        event_type: str | None = None,
+        event_payload: Any | None = None,
+    ) -> StartOutput:
         print(f"[reserve] reserving resources for {inp.model_name}")
         return StartOutput(
             model_name=inp.model_name,
             reservation_id=f"reservation-{inp.model_name}",
         )
 
-    async def compensate(self, inp: StartInput, out: StartOutput) -> None:
+    async def compensate(
+        self,
+        inp: StartInput,
+        out: StartOutput,
+        event_type: str | None = None,
+        event_payload: Any | None = None,
+    ) -> None:
         print(f"[reserve] compensating reservation {out.reservation_id}")
 
 
@@ -88,7 +100,12 @@ class DeployModelStep(BaseStep[DeployInput, DeployOutput]):
     def __init__(self) -> None:
         self.calls = 0
 
-    async def execute(self, inp: DeployInput) -> DeployOutput:
+    async def execute(
+        self,
+        inp: DeployInput,
+        event_type: str | None = None,
+        event_payload: Any | None = None,
+    ) -> DeployOutput:
         self.calls += 1
         print(f"[deploy] attempt={self.calls} model={inp.model_name}")
         if self.calls == 1:
@@ -97,19 +114,34 @@ class DeployModelStep(BaseStep[DeployInput, DeployOutput]):
 
 
 class FinalizeStep(BaseStep[FinalizeInput, FinalizeOutput]):
-    async def execute(self, inp: FinalizeInput) -> FinalizeOutput:
+    async def execute(
+        self,
+        inp: FinalizeInput,
+        event_type: str | None = None,
+        event_payload: Any | None = None,
+    ) -> FinalizeOutput:
         print(f"[finalize] model is available at {inp.endpoint}")
         return FinalizeOutput(status="COMPLETED")
 
 
 class FailingPublishStep(BaseStep[DeployInput, DeployOutput]):
-    async def execute(self, inp: DeployInput) -> DeployOutput:
+    async def execute(
+        self,
+        inp: DeployInput,
+        event_type: str | None = None,
+        event_payload: Any | None = None,
+    ) -> DeployOutput:
         print(f"[publish] forcing failure for {inp.model_name}")
         raise RuntimeError("publish failed")
 
 
 class ManualApprovalStep(BaseStep[StartInput, DeployOutput]):
-    async def execute(self, inp: StartInput) -> DeployOutput:
+    async def execute(
+        self,
+        inp: StartInput,
+        event_type: str | None = None,
+        event_payload: Any | None = None,
+    ) -> DeployOutput:
         print(f"[approval] waiting for manual approval for {inp.model_name}")
         raise RuntimeError("approval is pending")
 
