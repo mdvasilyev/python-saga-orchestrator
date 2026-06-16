@@ -471,6 +471,66 @@ class RetryWaitStep(BaseStep[RetryWaitInput, StartOutput]):
         return StartOutput(value=inp.value + 1)
 
 
+class LeakTrackInput(BaseModel):
+    value: str
+
+
+class LeakTrackOutput(BaseModel):
+    value: str
+
+
+class CompensateEventTrackerStep(BaseStep[LeakTrackInput, LeakTrackOutput]):
+    """Шаг 1: Успешно выполняется, а при компенсации запоминает, какой ивент ему прислали."""
+
+    def __init__(self) -> None:
+        self.compensate_event_type: str | None = "NOT_CALLED"
+
+    async def execute(
+        self,
+        inp: LeakTrackInput,
+        event_type: str | None = None,
+        event_payload: Any | None = None,
+    ) -> LeakTrackOutput:
+        return LeakTrackOutput(value=inp.value)
+
+    async def compensate(
+        self,
+        inp: LeakTrackInput,
+        out: LeakTrackOutput,
+        event_type: str | None = None,
+        event_payload: Any | None = None,
+    ) -> None:
+        self.compensate_event_type = event_type
+
+
+class AsyncFailInput(BaseModel):
+    value: str
+
+
+class AsyncFailOutput(BaseModel):
+    value: str
+
+
+class AsyncFailStep(BaseStep[AsyncFailInput, AsyncFailOutput]):
+    """Шаг 2: Засыпает, а при получении события - кидает ошибку."""
+
+    async def execute(
+        self,
+        inp: AsyncFailInput,
+        event_type: str | None = None,
+        event_payload: Any | None = None,
+    ) -> AsyncFailOutput | StepAwaitEvent:
+        if event_type is None:
+            return StepAwaitEvent(
+                event_types=("fail.event",),
+                correlation_id=inp.value,
+            )
+        if event_type == "fail.event":
+            raise RuntimeError("Step failed due to incoming event")
+
+        return AsyncFailOutput(value=inp.value)
+
+
 class SagaStartedEvent(BaseModel):
     saga_id: uuid.UUID
     initial_value: int

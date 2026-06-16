@@ -13,4 +13,4 @@ tests:
 		--build \
 		--abort-on-container-exit \
 		--exit-code-from tests
-	docker compose down -v
+	docker compose down -v --rmi local
