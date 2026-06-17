@@ -531,6 +531,53 @@ class AsyncFailStep(BaseStep[AsyncFailInput, AsyncFailOutput]):
         return AsyncFailOutput(value=inp.value)
 
 
+class CompensateWithOutboxStep(BaseStep[StartInput, StartOutput]):
+    """
+    Шаг, который при выполнении отрабатывает синхронно,
+    а при компенсации отправляет Outbox-сообщение и ждет внешнего ивента.
+    """
+
+    def __init__(self) -> None:
+        self.compensation_calls = 0
+        self.compensated = False
+
+    async def execute(
+        self,
+        inp: StartInput,
+        event_type: str | None = None,
+        event_payload: Any | None = None,
+    ) -> StartOutput:
+        return StartOutput(value=inp.value + 1)
+
+    async def compensate(
+        self,
+        inp: StartInput,
+        out: StartOutput,
+        event_type: str | None = None,
+        event_payload: Any | None = None,
+    ) -> StepAwaitEvent | None:
+        self.compensation_calls += 1
+
+        if event_type is None:
+            return StepAwaitEvent(
+                event_types=("revert.success", "revert.failed"),
+                correlation_id=f"revert-{out.value}",
+                outbox_events=(
+                    OutboxEvent(
+                        topic="resource_manager.revert_placements",
+                        key=str(out.value),
+                        payload={"action": "revert", "value_to_revert": out.value},
+                    ),
+                ),
+            )
+
+        if event_type == "revert.failed":
+            raise RuntimeError("revert failed via event")
+
+        self.compensated = True
+        return None
+
+
 class SagaStartedEvent(BaseModel):
     saga_id: uuid.UUID
     initial_value: int
