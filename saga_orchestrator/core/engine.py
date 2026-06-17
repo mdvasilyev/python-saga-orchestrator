@@ -1192,7 +1192,35 @@ class SagaEngine(Generic[ModelT, HistoryModelT]):
                 ):
                     return False
                 context: SagaContext = saga.context
+
                 if error is None and wait_spec is not None:
+                    if wait_spec.outbox_events:
+                        if self._outbox_writer is None:
+                            raise SagaStateError(
+                                "Step compensation returned StepAwaitEvent with outbox_events, "
+                                "but outbox writer is not configured in SagaEngine"
+                            )
+                        now = datetime.now(UTC)
+                        await_messages = [
+                            OutboxWriteMessage(
+                                saga_id=saga.id,
+                                aggregation_id=saga.aggregation_id,
+                                step_id=step_def.step_id,
+                                trace_id=saga.trace_id,
+                                topic=event.topic,
+                                key=event.key,
+                                payload=self._outbox_serializer.serialize_payload(
+                                    event.payload
+                                ),
+                                headers=self._outbox_serializer.serialize_headers(
+                                    event.headers
+                                ),
+                                next_attempt_at=now,
+                            )
+                            for event in wait_spec.outbox_events
+                        ]
+                        await self._outbox_writer.save(session, await_messages)
+
                     saga.step_history.append(
                         self._history_entry(
                             phase=SagaStepPhase.COMPENSATE,

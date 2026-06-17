@@ -5,7 +5,7 @@ from datetime import timedelta
 
 import pytest
 
-from saga_orchestrator import SagaAdmin, SagaBuilder
+from saga_orchestrator import OutboxDispatcher, SagaAdmin, SagaBuilder
 from saga_orchestrator.core.orchestrator import SagaOrchestrator
 from saga_orchestrator.domain.models import ExponentialRetry
 from saga_orchestrator.domain.models.enums import SagaStatus, SagaStepPhase
@@ -14,6 +14,7 @@ from saga_orchestrator.domain.models.notify import NotifyEvent, NotifyResult
 from tests.integration.helpers import (
     CompensateWaitsStep,
     CompensateWaitsWithTimeoutStep,
+    CompensateWithOutboxStep,
     CompensatingStep,
     FailingStep,
     FlakyCompensateStep,
@@ -22,7 +23,11 @@ from tests.integration.helpers import (
     ReservingStep,
     StartInput,
 )
-from tests.integration.models import IntegrationSagaHistory, IntegrationSagaState
+from tests.integration.models import (
+    IntegrationOutboxMessage,
+    IntegrationSagaHistory,
+    IntegrationSagaState,
+)
 
 
 @pytest.mark.asyncio
@@ -349,3 +354,102 @@ async def test_saga_reaches_failed_status_when_compensation_fails(session_maker)
     )
     assert compensate_history_entry is not None
     assert compensate_history_entry.status == SagaStepStatus.ERROR
+
+
+@pytest.mark.asyncio
+async def test_compensation_generates_and_dispatches_outbox_events(session_maker):
+    """
+    Проверяет, что если метод compensate возвращает StepAwaitEvent с outbox_events,
+    эти события корректно сохраняются в базу, могут быть отправлены через OutboxDispatcher,
+    и сага корректно выходит из ожидания при получении ответного ивента.
+    """
+    queue: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+
+    class QueuePublisher:
+        async def publish(
+            self,
+            *,
+            topic: str,
+            payload: dict[str, object],
+            key: str | None = None,
+            headers: dict[str, object] | None = None,
+        ) -> None:
+            await queue.put(
+                {
+                    "topic": topic,
+                    "payload": payload,
+                    "headers": headers or {},
+                }
+            )
+
+    # 2. Инициализируем движок с поддержкой Outbox
+    orchestrator = SagaOrchestrator[IntegrationSagaState, IntegrationSagaHistory](
+        model_class=IntegrationSagaState,
+        history_model_class=IntegrationSagaHistory,
+        outbox_model_class=IntegrationOutboxMessage,
+        session_maker=session_maker,
+    )
+    admin = SagaAdmin[IntegrationSagaState, IntegrationSagaHistory](
+        engine=orchestrator.engine
+    )
+
+    dispatcher = OutboxDispatcher(
+        session_maker=session_maker,
+        model_class=IntegrationOutboxMessage,
+        publisher=QueuePublisher(),
+    )
+
+    comp_step = CompensateWithOutboxStep()
+    fail_step = FailingStep()
+
+    builder = SagaBuilder(compensate_on_failure=True)
+    ref = builder.add_step(
+        step=comp_step,
+        input_map=lambda ctx: StartInput(value=ctx.initial_data["value"]),
+    )
+    builder.add_step(
+        step=fail_step,
+        depends_on=ref,
+        input_map=lambda out: NextInput(value=out.value),
+        retry_policy=ExponentialRetry(base_delay=timedelta(seconds=0), max_attempts=0),
+    )
+    orchestrator.register("comp-outbox-flow", builder.build())
+
+    saga_id = await orchestrator.start(
+        saga_name="comp-outbox-flow",
+        initial_data={"value": 10},
+        aggregation_id="agg-comp-outbox",
+    )
+
+    state_after_fail = await admin.get_saga(saga_id)
+    assert state_after_fail.status == SagaStatus.COMPENSATING_SUSPENDED
+    assert comp_step.compensation_calls == 1
+    assert comp_step.compensated is False
+
+    processed_outbox = await dispatcher.run_once(limit=10)
+    assert processed_outbox == 1, "Outbox сообщение при компенсации не было сохранено!"
+
+    outbox_msg = await queue.get()
+    queue.task_done()
+
+    assert outbox_msg["topic"] == "resource_manager.revert_placements"
+    assert outbox_msg["payload"] == {
+        "action": "revert",
+        "value_to_revert": 11,
+    }  # 10 + 1 (StartInput -> StartOutput)
+
+    token = state_after_fail.step_execution_token
+    await orchestrator.notify(
+        saga_id=saga_id,
+        token=token,
+        event=NotifyEvent(
+            event_id="evt-revert-success-1",
+            event_type="revert.success",
+            correlation_id="revert-11",
+        ),
+    )
+
+    final_state = await admin.get_saga(saga_id)
+    assert final_state.status == SagaStatus.COMPENSATED
+    assert comp_step.compensation_calls == 2
+    assert comp_step.compensated is True
