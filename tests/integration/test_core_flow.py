@@ -651,7 +651,9 @@ async def test_saga_fails_gracefully_on_input_map_error_forward(session_maker):
         history_model_class=IntegrationSagaHistory,
         session_maker=session_maker,
     )
-    admin = SagaAdmin[IntegrationSagaState, IntegrationSagaHistory](engine=orchestrator.engine)
+    admin = SagaAdmin[IntegrationSagaState, IntegrationSagaHistory](
+        engine=orchestrator.engine
+    )
     orchestrator.register("map_fail_forward", builder.build())
 
     saga_id = await orchestrator.start(
@@ -700,7 +702,9 @@ async def test_saga_compensates_on_input_map_error(session_maker):
         history_model_class=IntegrationSagaHistory,
         session_maker=session_maker,
     )
-    admin = SagaAdmin[IntegrationSagaState, IntegrationSagaHistory](engine=orchestrator.engine)
+    admin = SagaAdmin[IntegrationSagaState, IntegrationSagaHistory](
+        engine=orchestrator.engine
+    )
     orchestrator.register("map_fail_compensate", builder.build())
 
     saga_id = await orchestrator.start(
@@ -744,7 +748,9 @@ async def test_saga_handles_compensation_preparation_error(session_maker):
         history_model_class=IntegrationSagaHistory,
         session_maker=session_maker,
     )
-    admin = SagaAdmin[IntegrationSagaState, IntegrationSagaHistory](engine=orchestrator.engine)
+    admin = SagaAdmin[IntegrationSagaState, IntegrationSagaHistory](
+        engine=orchestrator.engine
+    )
     orchestrator.register("comp_prep_fail", builder.build())
 
     saga_id = await orchestrator.start(
