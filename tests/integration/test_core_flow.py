@@ -623,3 +623,150 @@ async def test_event_does_not_leak_into_compensation_after_failure(session_maker
     assert tracker_step.compensate_event_type is None, (
         f"Event leaked into compensation! Expected None, got: {tracker_step.compensate_event_type}"
     )
+
+
+@pytest.mark.asyncio
+async def test_saga_fails_gracefully_on_input_map_error_forward(session_maker):
+    """
+    Проверяет, что если маппер input_map выбрасывает исключение,
+    SagaEngine не крашится, а безопасно переводит сагу в статус FAILED
+    с сохранением ошибки в step_history.
+    """
+    builder = SagaBuilder(compensate_on_failure=False)
+    builder.add_step(
+        step=AddOneStep(),
+        input_map=lambda ctx: StartInput(value=ctx.initial_data["value"]),
+    )
+
+    def crashing_map(ctx):
+        raise KeyError("missing_crucial_key")
+
+    builder.add_step(
+        step=AddOneStep(),
+        input_map=crashing_map,
+    )
+
+    orchestrator = SagaOrchestrator[IntegrationSagaState, IntegrationSagaHistory](
+        model_class=IntegrationSagaState,
+        history_model_class=IntegrationSagaHistory,
+        session_maker=session_maker,
+    )
+    admin = SagaAdmin[IntegrationSagaState, IntegrationSagaHistory](engine=orchestrator.engine)
+    orchestrator.register("map_fail_forward", builder.build())
+
+    saga_id = await orchestrator.start(
+        saga_name="map_fail_forward",
+        initial_data={"value": 1},
+        aggregation_id="agg-fail-forward",
+    )
+
+    state = await admin.get_saga(saga_id)
+
+    assert state.status == SagaStatus.FAILED
+    assert "missing_crucial_key" in state.last_error
+
+    assert len(state.step_history) == 2
+    error_entry = state.step_history[1]
+
+    assert error_entry.phase == SagaStepPhase.EXECUTE
+    assert error_entry.status == SagaStepStatus.ERROR
+    assert "mapping_failed" in error_entry.input.get("_error", "")
+    assert "missing_crucial_key" in error_entry.error
+
+
+@pytest.mark.asyncio
+async def test_saga_compensates_on_input_map_error(session_maker):
+    """
+    Проверяет, что если маппер падает, а у саги включена настройка compensate_on_failure=True,
+    то она корректно переходит в COMPENSATING и откатывает предыдущие шаги.
+    """
+    builder = SagaBuilder(compensate_on_failure=True)
+    first_step = CompensatingStep()
+    builder.add_step(
+        step=first_step,
+        input_map=lambda ctx: StartInput(value=ctx.initial_data["value"]),
+    )
+
+    def bad_mapper(ctx):
+        raise ValueError("Invalid mapping payload")
+
+    builder.add_step(
+        step=AddOneStep(),
+        input_map=bad_mapper,
+    )
+
+    orchestrator = SagaOrchestrator[IntegrationSagaState, IntegrationSagaHistory](
+        model_class=IntegrationSagaState,
+        history_model_class=IntegrationSagaHistory,
+        session_maker=session_maker,
+    )
+    admin = SagaAdmin[IntegrationSagaState, IntegrationSagaHistory](engine=orchestrator.engine)
+    orchestrator.register("map_fail_compensate", builder.build())
+
+    saga_id = await orchestrator.start(
+        saga_name="map_fail_compensate",
+        initial_data={"value": 10},
+        aggregation_id="agg-fail-comp",
+    )
+
+    state = await admin.get_saga(saga_id)
+
+    assert state.status == SagaStatus.COMPENSATED
+    assert first_step.compensated is True
+
+    assert len(state.step_history) == 3
+    assert state.step_history[0].status == SagaStepStatus.SUCCESS
+    assert state.step_history[1].status == SagaStepStatus.ERROR
+    assert state.step_history[1].phase == SagaStepPhase.EXECUTE
+    assert state.step_history[2].status == SagaStepStatus.SUCCESS
+    assert state.step_history[2].phase == SagaStepPhase.COMPENSATE
+
+
+@pytest.mark.asyncio
+async def test_saga_handles_compensation_preparation_error(session_maker):
+    """
+    Проверяет, что если оркестратор не может восстановить модели входных/выходных данных
+    во время отката (например, структура Pydantic поменялась, или данные в БД битые),
+    """
+    builder = SagaBuilder(compensate_on_failure=True)
+    first_step = CompensatingStep()
+    builder.add_step(
+        step=first_step,
+        input_map=lambda ctx: StartInput(value=ctx.initial_data["value"]),
+    )
+    builder.add_step(
+        step=WaitingWithTimeoutStep(),
+        input_map=lambda ctx: StartInput(value=ctx.initial_data["value"]),
+    )
+
+    orchestrator = SagaOrchestrator[IntegrationSagaState, IntegrationSagaHistory](
+        model_class=IntegrationSagaState,
+        history_model_class=IntegrationSagaHistory,
+        session_maker=session_maker,
+    )
+    admin = SagaAdmin[IntegrationSagaState, IntegrationSagaHistory](engine=orchestrator.engine)
+    orchestrator.register("comp_prep_fail", builder.build())
+
+    saga_id = await orchestrator.start(
+        saga_name="comp_prep_fail",
+        initial_data={"value": 5},
+        aggregation_id="agg-comp-prep",
+    )
+
+    # Ломаем JSON в базе данных
+    async with session_maker() as session:
+        saga = await orchestrator.repository.get_for_update(session, saga_id)
+        saga.step_history[0].output = {"value": "NOT_AN_INTEGER"}
+        await session.commit()
+
+    await admin.compensate_step(saga_id)
+
+    state = await admin.get_saga(saga_id)
+    assert state.status == SagaStatus.FAILED
+    assert "Compensation input preparation failed" in state.last_error
+
+    comp_error_entry = state.step_history[-1]
+    assert comp_error_entry.phase == SagaStepPhase.COMPENSATE
+    assert comp_error_entry.status == SagaStepStatus.ERROR
+    assert "compensation_mapping_failed" in comp_error_entry.input.get("_error", "")
+    assert first_step.compensated is False

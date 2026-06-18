@@ -637,30 +637,13 @@ class SagaEngine(Generic[ModelT, HistoryModelT]):
                 saga = await self._repository.get_for_update(session, saga_id)
                 error_message = saga.last_error or "Aborted by admin"
 
-                try:
-                    saga_name = saga.context.saga_name
-                    definition = self._registry[saga_name]
-                    step_def = definition.steps[saga.current_step_index]
-                    step_id = step_def.step_id
-                    step_name = type(step_def.step).__name__
-                except (KeyError, IndexError):
-                    step_id = "__unknown__"
-                    step_name = "Unknown"
-
-                saga.step_history.append(
-                    self._history_model_class(
-                        timestamp=datetime.now(UTC),
-                        phase=SagaStepPhase.EXECUTE,
-                        status=SagaStepStatus.ERROR,
-                        step_id=step_id,
-                        step_name=step_name,
-                        attempt=saga.retry_counter + 1,
-                        token=saga.step_execution_token,
-                        input={"_admin": "abort"},
-                        output=None,
-                        error=error_message,
-                        skipped=True,
-                    )
+                self._append_failure_history(
+                    saga=saga,
+                    phase=SagaStepPhase.EXECUTE,
+                    step_index=saga.current_step_index,
+                    history_input={"_admin": "abort"},
+                    error_message=error_message,
+                    skipped=True,
                 )
 
                 saga.status = SagaStatus.FAILED
@@ -668,6 +651,112 @@ class SagaEngine(Generic[ModelT, HistoryModelT]):
                 saga.last_error = error_message
                 saga.step_execution_token = uuid.uuid4()
                 saga.context.clear_awaiting_state()
+
+    async def _handle_preparation_error(self, saga_id: UUID, error: Exception) -> None:
+        """Transition saga to COMPENSATING or FAILED due to input mapping error during forward execution."""
+        should_compensate = False
+
+        async with self._session_maker() as session:
+            async with session.begin():
+                saga = await self._repository.get_for_update(session, saga_id)
+                definition = self._registry.get(saga.context.saga_name)
+
+                error_msg = f"Step input preparation failed: {repr(error)}"
+                self._append_failure_history(
+                    saga=saga,
+                    phase=SagaStepPhase.EXECUTE,
+                    step_index=saga.current_step_index,
+                    history_input={"_error": "mapping_failed"},
+                    error_message=error_msg,
+                    skipped=False,
+                )
+
+                saga.last_error = error_msg
+                saga.context.clear_awaiting_state()
+
+                if (
+                    definition
+                    and definition.compensate_on_failure
+                    and saga.current_step_index > 0
+                ):
+                    saga.status = SagaStatus.COMPENSATING
+                    saga.retry_counter = 0
+                    saga.deadline_at = datetime.now(UTC) + self._execution_lease
+                    saga.step_execution_token = uuid.uuid4()
+                    should_compensate = True
+                else:
+                    saga.status = SagaStatus.FAILED
+                    saga.deadline_at = None
+                    saga.step_execution_token = uuid.uuid4()
+                    if definition:
+                        await self._handle_terminal_state(session, saga, definition)
+
+        if should_compensate:
+            await self._run_compensation(saga_id)
+
+    async def _handle_compensation_preparation_error(
+        self, saga_id: UUID, error: Exception
+    ) -> None:
+        """Transition saga to FAILED due to input mapping error during compensation."""
+        async with self._session_maker() as session:
+            async with session.begin():
+                saga = await self._repository.get_for_update(session, saga_id)
+                definition = self._registry.get(saga.context.saga_name)
+
+                error_msg = f"Compensation input preparation failed: {repr(error)}"
+                self._append_failure_history(
+                    saga=saga,
+                    phase=SagaStepPhase.COMPENSATE,
+                    step_index=saga.current_step_index - 1,
+                    history_input={"_error": "compensation_mapping_failed"},
+                    error_message=error_msg,
+                    skipped=False,
+                )
+
+                saga.last_error = error_msg
+                saga.context.clear_awaiting_state()
+
+                saga.status = SagaStatus.FAILED
+                saga.deadline_at = None
+                saga.step_execution_token = uuid.uuid4()
+                if definition:
+                    await self._handle_terminal_state(session, saga, definition)
+
+    def _append_failure_history(
+        self,
+        *,
+        saga: ModelT,
+        phase: SagaStepPhase,
+        step_index: int,
+        history_input: dict[str, Any],
+        error_message: str,
+        skipped: bool,
+    ) -> None:
+        """Helper to resolve step details safely and append an error record to saga history."""
+        definition = self._registry.get(saga.context.saga_name)
+        step_id = "__unknown__"
+        step_name = "Unknown"
+
+        if definition and 0 <= step_index < len(definition.steps):
+            step_def = definition.steps[step_index]
+            step_id = step_def.step_id
+            step_name = type(step_def.step).__name__
+
+        saga.step_history.append(
+            self._history_model_class(
+                timestamp=datetime.now(UTC),
+                phase=phase,
+                status=SagaStepStatus.ERROR,
+                step_id=step_id,
+                step_name=step_name,
+                attempt=saga.retry_counter + 1,
+                token=saga.step_execution_token or uuid.uuid4(),
+                input=history_input,
+                output=None,
+                error=error_message,
+                skipped=skipped,
+            )
+        )
 
     async def skip_step(
         self,
@@ -787,7 +876,13 @@ class SagaEngine(Generic[ModelT, HistoryModelT]):
     async def _drive(self, saga_id: UUID) -> None:
         """Execute forward steps until the saga stops progressing."""
         while True:
-            prep = await self._prepare_step(saga_id)
+            try:
+                prep = await self._prepare_step(saga_id)
+            except Exception as exc:
+                logger.exception("Preparation error in _drive for saga_id=%s", saga_id)
+                await self._handle_preparation_error(saga_id, exc)
+                return
+
             if prep is None:
                 return
 
@@ -1074,7 +1169,15 @@ class SagaEngine(Generic[ModelT, HistoryModelT]):
     async def _run_compensation(self, saga_id: UUID) -> None:
         """Execute compensation steps until rollback stops."""
         while True:
-            comp_prep = await self._prepare_compensation(saga_id)
+            try:
+                comp_prep = await self._prepare_compensation(saga_id)
+            except Exception as exc:
+                logger.exception(
+                    "Preparation error in _run_compensation for saga_id=%s", saga_id
+                )
+                await self._handle_compensation_preparation_error(saga_id, exc)
+                return
+
             if comp_prep is None:
                 return
 
